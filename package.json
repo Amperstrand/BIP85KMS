@@ -15,5 +15,12 @@
 		"typescript": "^5.5.2",
 		"vitest": "~3.0.7",
 		"wrangler": "^4.2.0"
+	},
+	"dependencies": {
+		"@noble/hashes": "^1.7.1",
+		"@noble/secp256k1": "^2.2.3",
+		"@scure/bip32": "^1.6.2",
+		"@scure/bip39": "^1.5.4",
+		"bech32": "^2.0.0"
 	}
 }

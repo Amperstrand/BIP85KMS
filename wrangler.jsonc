@@ -9,7 +9,9 @@
 	"compatibility_date": "2025-03-19",
 	"observability": {
 		"enabled": true
-	}
+	},
+        "route": "keys.dns4sats.xyz/*",
+
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
