@@ -10,8 +10,7 @@ set -e
 #   - Fetches keys from a remote server (via HTTP POST + JSON).
 #       * For encryption: fetches only the public key.
 #       * For decryption: fetches both public & private keys.
-#   - Stores the keys in /dev/shm (RAM-based) with random filenames (chmod 600).
-#   - Cleans up after itself on exit (including errors).
+#   - Avoids writing the private key to disk by using process substitution.
 #   - Provides a single-line success log.
 #   - Offers a verbose mode (-v / --verbose) to show debug messages.
 ###############################################################################
@@ -33,7 +32,7 @@ Usage: $0 [OPTIONS] <file>
 Encrypt or decrypt a file using age, fetching keys from a remote key server.
 
 OPTIONS:
-  -v, --verbose   Enable verbose debug messages (shows server response, temp paths, etc.)
+  -v, --verbose   Enable verbose debug messages (shows server response, etc.)
   -h, --help      Display this help and exit
 
 OPERATIONS:
@@ -49,8 +48,7 @@ OPERATIONS:
 HOW IT WORKS:
   - We derive whether to encrypt or decrypt by checking if the provided file ends in ".age".
   - The script uses 'age' under the hood to encrypt or decrypt.
-  - Key files are stored in /dev/shm/ with random filenames and permission 600,
-    then removed automatically upon completion.
+  - The private key is never written to disk; it is piped directly via process substitution.
 
 EXAMPLES:
   $0 secret.txt
@@ -122,22 +120,6 @@ fi
 debug "Operation mode determined: $MODE"
 
 ###############################################################################
-# Create Temp Files for Keys in /dev/shm
-###############################################################################
-PRIVATE_KEY_FILE="$(mktemp /dev/shm/age_prv.XXXXXX)"
-PUBLIC_KEY_FILE="$(mktemp /dev/shm/age_pub.XXXXXX)"
-chmod 600 "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
-debug "Private key file: $PRIVATE_KEY_FILE"
-debug "Public key file:  $PUBLIC_KEY_FILE"
-
-# Cleanup on exit or error
-cleanup() {
-  debug "Cleaning up key files."
-  rm -f "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
-}
-trap cleanup EXIT
-
-###############################################################################
 # Fetch Keys from Server
 ###############################################################################
 fetch_keys() {
@@ -165,19 +147,15 @@ fetch_keys() {
     exit 1
   fi
 
-  # Write the public key
-  echo "$AGE_PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
-
   # If we need private key, verify it
   if [ "$need_private" == "true" ]; then
     if [ -z "$AGE_PRIVATE_KEY" ] || [ "$AGE_PRIVATE_KEY" == "null" ]; then
       echo "❌ Private key not found in the response."
       exit 1
     fi
-    echo "$AGE_PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
 
     # Verify that the derived public key matches what's returned by the server
-    DERIVED_PUB=$(age-keygen -y "$PRIVATE_KEY_FILE" 2>/dev/null | grep '^age1')
+    DERIVED_PUB=$(age-keygen -y <(echo "$AGE_PRIVATE_KEY") 2>/dev/null | grep '^age1')
     if [ "$DERIVED_PUB" != "$AGE_PUBLIC_KEY" ]; then
       echo "❌ Public key mismatch between derived key and server key!"
       exit 1
@@ -198,8 +176,8 @@ encrypt_file() {
   local output_file="${INPUT_FILE}.age"
   debug "Encrypt output file: $output_file"
 
-  # Perform encryption
-  age -r "$(cat "$PUBLIC_KEY_FILE")" -o "$output_file" "$INPUT_FILE"
+  # Perform encryption using the public key directly
+  age -r "$AGE_PUBLIC_KEY" -o "$output_file" "$INPUT_FILE"
 
   echo "✅ Encrypted: $INPUT_FILE => $output_file"
 }
@@ -217,8 +195,8 @@ decrypt_file() {
   local output_file="${INPUT_FILE%.age}"
   debug "Decrypt output file: $output_file"
 
-  # Perform decryption
-  age -d -i "$PRIVATE_KEY_FILE" -o "$output_file" "$INPUT_FILE"
+  # Perform decryption using process substitution for the private key
+  age -d -i <(echo "$AGE_PRIVATE_KEY") -o "$output_file" "$INPUT_FILE"
 
   echo "✅ Decrypted: $INPUT_FILE => $output_file"
 }
