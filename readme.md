@@ -97,13 +97,18 @@ cd bin && ./openssl_demo.sh
 [DEBUG] Cleaning up temporary key file.
 ```
 
-## cli
+## node cli
 
 ```
 npm install
 npm run build
 export MNEMONIC_SECRET="bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon"
-node dist/cli.js --filename "hellos_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
+node dist/cli.js --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
 ```
 
 
+## python cli
+```
+pip install bipsea cryptography --break-system-packages
+python3 python/cli.py --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
+```
