@@ -66,7 +66,7 @@ cd bin && ./age_demo.sh
 [DEBUG] Cleaning up key files.
 ```
 
-# openssl demo
+## openssl demo
 
 WARNING: the encryption method needs feedback/review
 
@@ -96,3 +96,14 @@ cd bin && ./openssl_demo.sh
 ✅ Decrypted: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc => hello_openssl.txt (SHA256 match: 32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383)
 [DEBUG] Cleaning up temporary key file.
 ```
+
+## cli
+
+```
+npm install
+npm run build
+export MNEMONIC_SECRET="bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon"
+node dist/cli.js --filename "hellos_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
+```
+
+
