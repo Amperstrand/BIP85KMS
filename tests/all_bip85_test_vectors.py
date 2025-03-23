@@ -2,7 +2,10 @@
 import subprocess
 import sys
 import hmac, hashlib
-from bip32utils import BIP32Key
+
+# Import bipsea's internal modules.
+from bipsea.bip32types import ExtendedKey, parse_ext_key
+from bipsea.bip32 import derive_key
 
 # Master BIP32 root key from the BIP85 specification.
 MASTER_XPRV = "xprv9s21ZrQH143K2LBWUUQRFXhucrQqBpKdRRxNVq2zBqsx8HVqFk2uYo8kmbaLLHRdqtQpUm98uKfu3vca1LqdGhUtyoFnCNkfmXRyPXLjbKb"
@@ -16,52 +19,55 @@ def assert_equal(test_name, output, expected):
         print(f"  Got:      {output}")
         sys.exit(1)
 
-def hardened(i):
-    return i | 0x80000000
-
-def derive_sub_xprv(master_xprv, path):
+def derive_sub_xprv(master_xprv: str, path: list) -> (str, str):
     """
-    Derive a sub-xprv from the master xprv using a list of indices (each hardened).
-    For example, for path m/83696968'/0'/0', use path=[83696968, 0, 0].
-    Returns a tuple (sub_xprv, private_key_hex) where private_key_hex is the 32-byte private key in hex.
+    Derive a sub-xprv from the master_xprv using a list of integers (each representing a hardened segment).
+    For example, for path m/83696968'/0'/0', pass path = [83696968, 0, 0].
+    This function now prepends "m" to the path so that the full path becomes:
+      ["m", "83696968'", "0'", "0'"]
+    Returns a tuple (sub_xprv_str, private_key_hex) where private_key_hex is the 32-byte private key (excluding the leading 0x00) as a hex string.
     """
-    key = BIP32Key.fromExtendedKey(master_xprv)
-    for index in path:
-        key = key.ChildKey(hardened(index))
-    # Use key.k which is an ecdsa.SigningKey; to_string() returns 32 bytes.
-    privkey_hex = key.k.to_string().hex()
-    return key.ExtendedKey(), privkey_hex
+    # Parse the master extended key.
+    master = parse_ext_key(master_xprv)
+    # Build the path segments: prepend "m" then convert each integer to a hardened segment string.
+    path_strs = ["m"] + [f"{p}'" for p in path]
+    print(f"Debug: Full derivation path: {path_strs}")
+    sub = derive_key(master, path_strs, private=True)
+    # sub.data is 33 bytes: the first byte is 0x00; the next 32 bytes is the private key.
+    privkey_hex = sub.data[1:].hex()
+    return str(sub), privkey_hex
 
-def run_bipsea(application, xprv, number, index, extra_args=None):
+def run_bipsea(application: str, xprv: str, number: int or None, index: int, extra_args: list or None = None) -> str:
     """
     Run the bipsea CLI with the given parameters.
-    application: one of [base64, base85, dice, drng, hex, mnemonic, wif, xprv]
-    xprv: extended private key to feed in
-    number: length of output (in bytes/chars/words), or None if not required.
-    index: child index (as integer)
-    extra_args: list of additional command-line arguments (e.g. ["-t", "eng"] or ["-s", "6"])
-    Returns the output string (stripped).
+      - application: one of [base64, base85, dice, drng, hex, mnemonic, wif, xprv]
+      - xprv: the extended private key (as a base58 string)
+      - number: length of output (in bytes/chars/words), or None if not required
+      - index: child index (as an integer)
+      - extra_args: additional command-line arguments (list), e.g. ["-t", "eng"] or ["-s", "6"]
+    Returns the stripped output string.
     """
     cmd = ["bipsea", "derive", "-a", application, "-x", xprv, "-i", str(index)]
     if number is not None:
         cmd.extend(["-n", str(number)])
     if extra_args:
         cmd.extend(extra_args)
+    print("Debug: Running command:", " ".join(cmd))
     result = subprocess.check_output(cmd, encoding="utf-8").strip()
     return result
 
-def compute_hmac_sha512(key_bytes_hex):
+def compute_hmac_sha512(key_bytes_hex: str) -> str:
     """
-    Compute HMAC-SHA512 with the key "bip-entropy-from-k" on the 32-byte private key (given as hex).
+    Compute HMAC-SHA512 using the ASCII key "bip-entropy-from-k" on the 32-byte private key (provided as hex).
     Returns the hex digest.
     """
     key_bytes = bytes.fromhex(key_bytes_hex)
     return hmac.new(b"bip-entropy-from-k", key_bytes, hashlib.sha512).hexdigest()
 
-def compute_drng(seed_hex, output_bytes):
+def compute_drng(seed_hex: str, output_bytes: int) -> str:
     """
-    Compute BIP85-DRNG-SHAKE256: Use the 64-byte seed (in hex) to seed SHAKE256,
-    then return output_bytes bytes as a hex string.
+    Compute BIP85-DRNG-SHAKE256: seed a SHAKE256 instance with the 64-byte seed (provided as hex)
+    and return output_bytes bytes as a hex string.
     """
     seed = bytes.fromhex(seed_hex)
     shake = hashlib.shake_256(seed)
@@ -86,11 +92,8 @@ def main():
     print("Sub-xprv:", sub_xprv_tv1)
     print("Intermediate private key (hex):", privkey_hex_tv1)
     
-    # Manually compute HMAC-SHA512 on the derived private key.
     manual_hmac1 = compute_hmac_sha512(privkey_hex_tv1)
     print("Manually computed HMAC-SHA512:", manual_hmac1)
-    
-    # Assert that our manual computation matches the expected raw entropy.
     assert_equal("Raw Entropy Test Vector 1 (manual)", manual_hmac1, expected_raw_entropy1)
     
     # Test Vector 2: from m/83696968'/0'/1'
@@ -104,10 +107,9 @@ def main():
     
     manual_hmac2 = compute_hmac_sha512(privkey_hex_tv2)
     print("Manually computed HMAC-SHA512:", manual_hmac2)
-    
     assert_equal("Raw Entropy Test Vector 2 (manual)", manual_hmac2, expected_raw_entropy2)
     
-    # DRNG: from Test Vector 1’s raw entropy seed using SHAKE256 to produce 80 bytes.
+    # DRNG: use Test Vector 1’s raw entropy as the seed to produce 80 bytes via SHAKE256.
     expected_drng = (
         "b78b1ee6b345eae6836c2d53d33c64cdaf9a696487be81b03e822dc84b3f1cd883d7559e53d175f243e4c349e822a957bbff9224bc5dde9492ef54e8a439f6bc8c7355b87a925a37ee405a7502991111"
     )
@@ -136,12 +138,12 @@ def main():
     mnemonic24 = run_bipsea("mnemonic", MASTER_XPRV, 24, 0, extra_args=["-t", "eng"])
     assert_equal("BIP39 24-word mnemonic", mnemonic24, expected_mnemonic24)
     
-    # HD-Seed WIF (Application 2'): Do not pass -n since it's not required.
+    # HD-Seed WIF (Application 2'): (No -n parameter)
     expected_wif = "Kzyv4uF39d4Jrw2W7UryTHwZr1zQVNk4dAFyqE6BuMrMh1Za7uhp"
     wif_out = run_bipsea("wif", MASTER_XPRV, None, 0)
     assert_equal("HD-Seed WIF", wif_out, expected_wif)
     
-    # XPRV (Application 32'): Do not pass -n.
+    # XPRV (Application 32'): (No -n parameter)
     expected_xprv = "xprv9s21ZrQH143K2srSbCSg4m4kLvPMzcWydgmKEnMmoZUurYuBuYG46c6P71UGXMzmriLzCCBvKQWBUv3vPB3m1SATMhp3uEjXHJ42jFg7myX"
     xprv_out = run_bipsea("xprv", MASTER_XPRV, None, 0)
     assert_equal("XPRV derivation", xprv_out, expected_xprv)
@@ -157,7 +159,7 @@ def main():
     assert_equal("Password Base64", pwd_base64, expected_pwd_base64)
     
     # Password (Base85, length 12, Application 707785')
-    expected_pwd_base85 = "_s`{TW89)i4`"  # expected with backticks exactly as in spec.
+    expected_pwd_base85 = "_s`{TW89)i4`"
     pwd_base85 = run_bipsea("base85", MASTER_XPRV, 12, 0)
     assert_equal("Password Base85", pwd_base85, expected_pwd_base85)
     
