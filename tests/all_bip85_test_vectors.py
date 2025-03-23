@@ -1,4 +1,25 @@
 #!/usr/bin/env python3
+"""
+This file tests the BIP85 test vectors using bipsea.
+
+IMPORTANT NOTES:
+---------------
+1. The raw entropy test vectors (Test Case 1 and Test Case 2 for raw entropy, and the DRNG output)
+   require deriving secrets from specific arbitrary derivation paths (m/83696968'/0'/0' and m/83696968'/0'/1').
+2. The bipsea CLI requires you to choose a predefined application (e.g. hex, mnemonic, wif, etc.) and
+   uses a fixed derivation path corresponding to that application (for example, for hex output it uses the
+   application code 128169'). Therefore, you cannot specify an arbitrary path (like m/83696968'/0'/0')
+   using the CLI.
+3. To derive the raw entropy exactly as specified in BIP85, we must manually derive the sub-xprv for the 
+   desired path using bipsea's internal BIP-32 modules (which we import from bipsea.bip32types and bipsea.bip32)
+   and then compute the HMAC-SHA512 on the derived private key.
+4. The DRNG test vector is computed by seeding SHAKE256 with the raw entropy from Test Vector 1.
+5. The remaining application test vectors (BIP39 mnemonics, HD-Seed WIF, XPRV, HEX output, Base64 and Base85
+   passwords, and Dice) are derivable directly via the bipsea CLI.
+
+This file uses verbose debugging to show the full derivation path and intermediate keys.
+"""
+
 import subprocess
 import sys
 import hmac, hashlib
@@ -22,30 +43,44 @@ def assert_equal(test_name, output, expected):
 def derive_sub_xprv(master_xprv: str, path: list) -> (str, str):
     """
     Derive a sub-xprv from the master_xprv using a list of integers (each representing a hardened segment).
+    
+    IMPORTANT:
+    ----------
+    The bipsea CLI always uses a predefined derivation path based on the chosen application.
+    To derive the raw entropy exactly as specified in BIP85 (from m/83696968'/0'/0' for example),
+    we need to manually derive the sub-xprv using bipsea's internal BIP32 functions.
+    
     For example, for path m/83696968'/0'/0', pass path = [83696968, 0, 0].
-    This function now prepends "m" to the path so that the full path becomes:
+    We then prepend "m" to the path so that the full derivation path becomes:
       ["m", "83696968'", "0'", "0'"]
-    Returns a tuple (sub_xprv_str, private_key_hex) where private_key_hex is the 32-byte private key (excluding the leading 0x00) as a hex string.
+    This ensures that derive_key processes all the intended segments.
+    
+    Returns:
+      A tuple (sub_xprv_str, private_key_hex) where:
+       - sub_xprv_str is the extended key for the derived node (as base58 string).
+       - private_key_hex is the 32-byte private key (excluding the leading 0x00) as a hex string.
     """
-    # Parse the master extended key.
     master = parse_ext_key(master_xprv)
-    # Build the path segments: prepend "m" then convert each integer to a hardened segment string.
+    # Prepend "m" to indicate the master node, then each segment is a hardened index.
     path_strs = ["m"] + [f"{p}'" for p in path]
     print(f"Debug: Full derivation path: {path_strs}")
     sub = derive_key(master, path_strs, private=True)
-    # sub.data is 33 bytes: the first byte is 0x00; the next 32 bytes is the private key.
+    # sub.data is 33 bytes: first byte is 0x00, the rest is the 32-byte private key.
     privkey_hex = sub.data[1:].hex()
     return str(sub), privkey_hex
 
 def run_bipsea(application: str, xprv: str, number: int or None, index: int, extra_args: list or None = None) -> str:
     """
     Run the bipsea CLI with the given parameters.
+    
+    Parameters:
       - application: one of [base64, base85, dice, drng, hex, mnemonic, wif, xprv]
-      - xprv: the extended private key (as a base58 string)
-      - number: length of output (in bytes/chars/words), or None if not required
-      - index: child index (as an integer)
-      - extra_args: additional command-line arguments (list), e.g. ["-t", "eng"] or ["-s", "6"]
-    Returns the stripped output string.
+      - xprv: extended private key (as base58 string)
+      - number: length of output (in bytes/chars/words) or None if not required
+      - index: child index (integer)
+      - extra_args: additional CLI arguments (list), e.g., ["-t", "eng"] or ["-s", "6"]
+    
+    Returns the output string (stripped).
     """
     cmd = ["bipsea", "derive", "-a", application, "-x", xprv, "-i", str(index)]
     if number is not None:
@@ -82,6 +117,9 @@ def main():
     #############################################
     # Raw Entropy Test Vectors (Manual Calculation)
     #############################################
+    # These test vectors require deriving from arbitrary paths (m/83696968'/0'/0' and m/83696968'/0'/1'),
+    # which is not possible using only the bipsea CLI because it forces you to choose an application
+    # (and uses a fixed derivation path for that application). Thus, we derive these manually.
     
     # Test Vector 1: from m/83696968'/0'/0'
     expected_raw_entropy1 = (
@@ -109,7 +147,7 @@ def main():
     print("Manually computed HMAC-SHA512:", manual_hmac2)
     assert_equal("Raw Entropy Test Vector 2 (manual)", manual_hmac2, expected_raw_entropy2)
     
-    # DRNG: use Test Vector 1’s raw entropy as the seed to produce 80 bytes via SHAKE256.
+    # DRNG: use the raw entropy from Test Vector 1 as the seed to produce 80 bytes via SHAKE256.
     expected_drng = (
         "b78b1ee6b345eae6836c2d53d33c64cdaf9a696487be81b03e822dc84b3f1cd883d7559e53d175f243e4c349e822a957bbff9224bc5dde9492ef54e8a439f6bc8c7355b87a925a37ee405a7502991111"
     )
@@ -120,6 +158,8 @@ def main():
     #############################################
     # Application Test Vectors (Using bipsea CLI)
     #############################################
+    
+    # For these tests, we use the bipsea CLI directly, because they use predefined applications.
     
     # BIP39 mnemonic (Application 39') - 12 words
     expected_mnemonic12 = "girl mad pet galaxy egg matter matrix prison refuse sense ordinary nose"
@@ -138,12 +178,12 @@ def main():
     mnemonic24 = run_bipsea("mnemonic", MASTER_XPRV, 24, 0, extra_args=["-t", "eng"])
     assert_equal("BIP39 24-word mnemonic", mnemonic24, expected_mnemonic24)
     
-    # HD-Seed WIF (Application 2'): (No -n parameter)
+    # HD-Seed WIF (Application 2'): (Do not pass -n)
     expected_wif = "Kzyv4uF39d4Jrw2W7UryTHwZr1zQVNk4dAFyqE6BuMrMh1Za7uhp"
     wif_out = run_bipsea("wif", MASTER_XPRV, None, 0)
     assert_equal("HD-Seed WIF", wif_out, expected_wif)
     
-    # XPRV (Application 32'): (No -n parameter)
+    # XPRV (Application 32'): (Do not pass -n)
     expected_xprv = "xprv9s21ZrQH143K2srSbCSg4m4kLvPMzcWydgmKEnMmoZUurYuBuYG46c6P71UGXMzmriLzCCBvKQWBUv3vPB3m1SATMhp3uEjXHJ42jFg7myX"
     xprv_out = run_bipsea("xprv", MASTER_XPRV, None, 0)
     assert_equal("XPRV derivation", xprv_out, expected_xprv)
