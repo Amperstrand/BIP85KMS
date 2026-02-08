@@ -112,3 +112,62 @@ node dist/cli.js --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --
 pip install bipsea cryptography --break-system-packages
 python3 python/cli.py --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
 ```
+
+## GitHub Pages standalone browser demo
+
+A client-side demo is available in `docs/` and can be published with GitHub Pages.
+
+- The demo runs derivation entirely in the browser.
+- It defaults to the educational mnemonic `bacon bacon ...` so people can click-and-learn quickly.
+- **Do not use real mnemonics/private secrets in this demo.**
+
+- The browser demo defaults to public output only; check **Include private key output** only if you explicitly want full key material in the page output.
+
+### Local preview
+
+```bash
+python3 -m http.server 4173 --directory docs
+# open http://localhost:4173
+```
+
+### Publish on GitHub Pages
+
+This repository includes `.github/workflows/pages.yml` to deploy `docs/`.
+
+Workflow name in Actions: **Deploy demo to GitHub Pages**.
+
+#### Do I need manual steps?
+
+Yes — there is a **one-time manual setup** in GitHub. After that, deployment is automatic.
+
+#### One-time manual setup
+
+1. Open your GitHub repository.
+2. Go to **Settings → Pages**.
+3. Under **Build and deployment**, set **Source** to **GitHub Actions**.
+4. Save.
+
+#### After one-time setup (automatic deploys)
+
+- Pushes to `main` trigger the Pages workflow automatically.
+- You can also run it manually from **Actions → Deploy demo to GitHub Pages → Run workflow** and set `ref` to a branch (for example `work`) or `main`.
+- The workflow uploads `docs/` and publishes it to GitHub Pages.
+
+
+#### Fastest way to test before merge
+
+1. Push your feature branch (for example `work`).
+2. Go to **Actions → Deploy demo to GitHub Pages → Run workflow**.
+3. Set `ref` to your branch name (`work`) and run it.
+4. Open the run logs and copy `page_url` from the deploy step.
+5. Verify the live demo loads and derives keys.
+
+#### How to verify it worked
+
+1. Open the workflow run in **Actions**.
+2. Check the final deploy step for `page_url`.
+3. Visit that URL.
+
+For a typical public repo named `BIP85KMS`, the URL will look like:
+
+`https://<your-github-username>.github.io/BIP85KMS/`
