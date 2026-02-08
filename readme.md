@@ -1,114 +1,156 @@
-## Dependencies that have already been installed
-```
-npm install @scure/bip39 @scure/bip32 @noble/hashes
-npm install @noble/secp256k1
-npm install bech32@latest
+# BIP85KMS (Proof of Concept)
+
+Deterministic key derivation service for file encryption workflows.
+
+This project runs as a Cloudflare Worker and derives keys from a single master mnemonic (`MNEMONIC_SECRET`). The goal is to avoid storing per-file keys at rest: the same inputs deterministically recreate the same derived key material.
+
+## What this repository is trying to do
+
+At a high level, this project is a **deterministic KMS-like service**:
+
+- Input: `filename`, `keyVersion`, `appId` (and optionally `getPrivateKey`).
+- Secret root: a BIP39 mnemonic stored as a Worker secret.
+- Output:
+  - Public mode: return an `age_public_key` and IV.
+  - Private mode: additionally return `age_private_key`, derivation metadata, and raw entropy.
+
+Core flow in the Worker:
+
+1. Read JSON request.
+2. Convert mnemonic -> seed -> BIP32 master node.
+3. Derive deterministic entropy/key material.
+4. Return either public-only or full key material.
+
+## Current architecture
+
+- `src/index.ts`: Worker HTTP API.
+- `src/core.js`: shared derivation logic used by both Worker and browser app (single source of truth).
+- `src/bip85kms.ts`: typed re-exports/wrapper for Worker/test imports.
+- `bin/deterministic_age.sh`: age encrypt/decrypt helper script backed by remote key API.
+- `bin/deterministic_openssl_encrypt.sh`: OpenSSL deterministic encrypt/decrypt helper script.
+- `src/cli.ts` and `python/cli.py`: local CLIs to derive values without deploying.
+- `index.html` + `web/app.js`: static GitHub Pages-friendly client app (all derivation in browser).
+
+## What currently works
+
+- Worker enforces `POST` and returns JSON for valid requests.
+- Deterministic outputs are generated for the same input tuple and mnemonic.
+- `bin/deterministic_age.sh` is usable for end-to-end encrypt/decrypt against a running key server.
+- `bin/deterministic_openssl_encrypt.sh` can encrypt/decrypt and verify hash suffix consistency.
+
+## Current status
+
+- ✅ `npx vitest run` passes in this repository.
+- ✅ Worker endpoint tests now validate method handling, validation errors, public response shape, and private-key response shape.
+- ✅ Static browser app can derive keys client-side using the same shared functions as the Worker.
+- ✅ Deterministic key tests validate repeatability and index separation.
+- ⚠️ There is still no `npm run build` script in `package.json` (this project currently relies on Wrangler and direct TypeScript execution in tests).
+
+## Important design/security gaps to fix next
+
+These are the biggest issues to address before considering production use:
+
+1. **No authentication/authorization on private key retrieval**
+   - Anyone who can call the endpoint with `getPrivateKey: true` can receive private key material and raw entropy.
+   - Add strong auth (mTLS, signed JWT, HMAC request signing, allowlist, etc.) before exposing this endpoint.
+
+2. **Derivation is not fully scoped by `appId` + `filename`**
+   - The current entropy/key derivation effectively depends only on `keyVersion` for the Age key material.
+   - `appId` and `filename` are hashed into reported path metadata and IV, but not into the entropy used for the private key itself.
+   - This can cause key reuse across different apps/files using the same `keyVersion`.
+
+3. **Deterministic encryption caveats**
+   - Deterministic schemes leak equality patterns (same plaintext and settings => same ciphertext in some modes/configs).
+   - OpenSSL helper currently uses AES-256-CBC with deterministic IV construction and `-nosalt`; this requires a careful security review and likely redesign.
+
+4. **Inconsistent IV behavior across components**
+   - Worker returns IV from `sha256(filename)[:12]`.
+   - OpenSSL helper derives IV from file content hash (first 16 bytes of SHA-256).
+   - This mismatch creates confusion and indicates protocol drift.
+
+5. **Hardcoded / non-standard elements**
+   - `deriveMasterKey` uses Argon2id with a hardcoded salt string and is not wired into Worker flow.
+   - Either remove dead code or clearly define and test where it should be used.
+
+6. **Operational hardening missing**
+   - No rate limiting, structured audit logging, request schema validation, rotation policy docs, or abuse controls.
+
+## Recommended cleanup plan
+
+1. Fix key derivation scope:
+   - Include `appId` and `filename` (or domain-separated hashes of both) in actual key derivation inputs, not just metadata/path string.
+
+2. Add access control:
+   - Disallow unauthenticated `getPrivateKey` calls.
+
+3. Unify deterministic-encryption protocol:
+   - Decide one IV derivation strategy per algorithm and document it.
+
+4. Improve developer ergonomics:
+   - Add a real `build` script or remove references to it.
+   - Add schema docs for request/response payloads.
+
+
+
+## Static GitHub Pages mode (client-side only)
+
+This repository now supports a fully static workflow:
+
+- Open `index.html` in a browser (or host it on GitHub Pages).
+- Enter mnemonic + input parameters.
+- Derivation runs entirely client-side in `web/app.js`.
+- The app imports the exact same derivation functions from `src/core.js` that the Worker uses, keeping behavior DRY and consistent.
+
+To serve locally:
+
+```bash
+python3 -m http.server 8788
+# then open http://localhost:8788
 ```
 
-## DISCLAIMER
+## Minimal local usage
 
-not tested. just a proof of concept. Use your own keys. Host your own instance.
+Install dependencies:
 
-## Deploy
-```
-echo "bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon" | wrangler secret put MNEMONIC_SECRET
-npx wrangler deploy --routes https://keys.dns4sats.xyz/*
-```
-
-## curl demo
-```
-curl -s -X POST https://keys.dns4sats.xyz -H "Content-Type: application/json" -d '{"filename":"README.md","keyVersion":1,"appId":"docs","getPrivateKey":true}' | jq -r
-```
-
-```
-{
-  "derivationPath": "m/83696968'/128169'/1'/1186212674'/859136773'",
-  "age_private_key": "AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW",
-  "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33",
-  "raw_entropy": "d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81",
-  "iv": "b335630551682c19a781afeb"
-}
-```
-
-```
-curl -s -X POST https://keys.dns4sats.xyz -H "Content-Type: application/json" -d '{"filename":"README.md","keyVersion":1,"appId":"docs"}' | jq -r
-```
-
-```
-{
-  "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33",
-  "iv": "b335630551682c19a781afeb"
-}
-```
-
-## age demo
-
-```
-cd bin && ./age_demo.sh
-[DEBUG] Operation mode determined: encrypt
-[DEBUG] Private key file: /dev/shm/age_prv.TQVHfD
-[DEBUG] Public key file:  /dev/shm/age_pub.y9QFb2
-[DEBUG] Encrypting: hello_age.txt
-[DEBUG] Fetching keys from server with payload: {"filename":"hello_age.txt","keyVersion":1,"appId":"docs"}
-[DEBUG] Server response JSON: {"age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","iv":"16156fb9664f1d85f07d0793"}
-[DEBUG] Encrypt output file: hello_age.txt.age
-✅ Encrypted: hello_age.txt => hello_age.txt.age
-[DEBUG] Cleaning up key files.
-[DEBUG] Operation mode determined: decrypt
-[DEBUG] Private key file: /dev/shm/age_prv.kqx68T
-[DEBUG] Public key file:  /dev/shm/age_pub.yWH8Q4
-[DEBUG] Decrypting: hello_age.txt.age
-[DEBUG] Fetching keys from server with payload: {"filename":"hello_age.txt.age","keyVersion":1,"appId":"docs","getPrivateKey":true}
-[DEBUG] Server response JSON: {"derivationPath":"m/83696968'/128169'/1'/1186212674'/1347622895'","age_private_key":"AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW","age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","raw_entropy":"d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81","iv":"d05317efd337e657a189108e"}
-[DEBUG] Verified: private key => public key matches the server's public key.
-[DEBUG] Decrypt output file: hello_age.txt
-✅ Decrypted: hello_age.txt.age => hello_age.txt
-[DEBUG] Cleaning up key files.
-```
-
-## openssl demo
-
-WARNING: the encryption method needs feedback/review
-
-```
-cd bin && ./openssl_demo.sh
-[DEBUG] Operation mode determined: encrypt
-[DEBUG] Base filename for key retrieval: hello_openssl.txt
-[DEBUG] Temporary key file: /dev/shm/openssl_key.J3Vluy
-[DEBUG] Encrypting file: hello_openssl.txt
-[DEBUG] Computed SHA256: 32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383
-[DEBUG] Derived IV (first 32 hex digits): 32a4652ec63b896e60e82bdecbcfe973
-[DEBUG] Output file will be: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc
-[DEBUG] Fetching key from server with payload: {"filename":"hello_openssl.txt","keyVersion":1,"appId":"docs","getPrivateKey":true}
-[DEBUG] Server response JSON: {"derivationPath":"m/83696968'/128169'/1'/1186212674'/2137221032'","age_private_key":"AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW","age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","raw_entropy":"d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81","iv":"7f6367a858d7a6c7700988a0"}
-[DEBUG] Using key: d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81
-✅ Encrypted: hello_openssl.txt => hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc
-[DEBUG] Cleaning up temporary key file.
-[DEBUG] Operation mode determined: decrypt
-[DEBUG] Base filename for key retrieval: hello_openssl.txt
-[DEBUG] Temporary key file: /dev/shm/openssl_key.KFlFMk
-[DEBUG] Decrypting file: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc
-[DEBUG] Using IV (derived from filename): 32a4652ec63b896e60e82bdecbcfe973
-[DEBUG] Fetching key from server with payload: {"filename":"hello_openssl.txt","keyVersion":1,"appId":"docs","getPrivateKey":true}
-[DEBUG] Server response JSON: {"derivationPath":"m/83696968'/128169'/1'/1186212674'/2137221032'","age_private_key":"AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW","age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","raw_entropy":"d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81","iv":"7f6367a858d7a6c7700988a0"}
-[DEBUG] Using key: d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81
-[DEBUG] Decrypted output file will be: hello_openssl.txt
-✅ Decrypted: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc => hello_openssl.txt (SHA256 match: 32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383)
-[DEBUG] Cleaning up temporary key file.
-```
-
-## node cli
-
-```
+```bash
 npm install
-npm run build
-export MNEMONIC_SECRET="bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon"
-node dist/cli.js --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
 ```
 
+Run tests:
 
-## python cli
+```bash
+npx vitest run
 ```
-pip install bipsea cryptography --break-system-packages
-python3 python/cli.py --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
+
+Run local worker dev server:
+
+```bash
+npx wrangler dev
 ```
+
+Set secret and deploy:
+
+```bash
+echo "bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon" | wrangler secret put MNEMONIC_SECRET
+npx wrangler deploy
+```
+
+Example API call (public response):
+
+```bash
+curl -s -X POST https://<your-worker-host> \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"README.md","keyVersion":1,"appId":"docs"}' | jq -r
+```
+
+Example API call (full/private response):
+
+```bash
+curl -s -X POST https://<your-worker-host> \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"README.md","keyVersion":1,"appId":"docs","getPrivateKey":true}' | jq -r
+```
+
+## Disclaimer
+
+This repository is still a proof of concept. Do not use it for production key management without completing the hardening items above.

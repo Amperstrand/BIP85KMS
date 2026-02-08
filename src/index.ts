@@ -1,8 +1,6 @@
 /// <reference types="@cloudflare/workers-types" />
 
-import { HDKey } from "@scure/bip32";
-import { mnemonicToSeedSync } from "@scure/bip39";
-import { Env, deriveKeyAndIV } from "./bip85kms";
+import { Env, deriveFromMnemonic } from "./bip85kms";
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") {
@@ -24,25 +22,21 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       );
     }
 
-    const mnemonic = env.MNEMONIC_SECRET;
-    const seed = mnemonicToSeedSync(mnemonic);
-    const masterNode = HDKey.fromMasterSeed(seed);
-
-    const result = await deriveKeyAndIV(masterNode, keyVersion, appId, filename);
+    const result = deriveFromMnemonic(env.MNEMONIC_SECRET, keyVersion, appId, filename);
 
     if (getPrivateKey) {
       return new Response(JSON.stringify(result), {
         headers: { "Content-Type": "application/json" }
       });
-    } else {
-      return new Response(
-        JSON.stringify({
-          age_public_key: result.age_public_key,
-          iv: result.iv
-        }),
-        { headers: { "Content-Type": "application/json" } }
-      );
     }
+
+    return new Response(
+      JSON.stringify({
+        age_public_key: result.age_public_key,
+        iv: result.iv
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    );
   } catch (err) {
     return new Response(JSON.stringify({ error: (err as Error).message }), {
       status: 400
@@ -51,7 +45,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     return handleRequest(request, env);
   }
 };

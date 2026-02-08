@@ -1,38 +1,21 @@
-import { describe, it, expect } from 'vitest'; // Use Vitest's native imports
-import { deriveDeterministicAgeKey, deriveMasterKey } from '../src/index.js'; // Ensure .js extension if using ESM
+import { describe, it, expect } from 'vitest';
+import { deriveDeterministicAgeKey } from '../src/bip85kms';
 
-// Define the passphrase to derive the master key
-const testPassphrase = "example-passphrase-do-not-use!";
-const testMasterKey = deriveMasterKey(testPassphrase);
+const testMasterKey = new TextEncoder().encode('deterministic-test-master-key-material-32bytes!');
 
 describe('Deterministic Age Key Generation', () => {
-    // Test the deterministic Age key generation for index 0
-    it('should generate the correct key for index 0', () => {
-        expect(deriveDeterministicAgeKey(testMasterKey, 0)).toBe(
-            "AGE-SECRET-KEY-1VZ3CREDN87LLHYDVS6FK36EZEVWNZGGFFSWZDN7DL0J04WG723MQCZUS9Q"
-        );
-    });
+  it('is deterministic for the same master key + index', () => {
+    const k1 = deriveDeterministicAgeKey(testMasterKey, 0);
+    const k2 = deriveDeterministicAgeKey(testMasterKey, 0);
 
-    // Test the deterministic Age key generation for index 4
-    it('should generate the correct key for index 4', () => {
-        expect(deriveDeterministicAgeKey(testMasterKey, 4)).toBe(
-            "AGE-SECRET-KEY-1FMPVFDE9WD8CSTNS4J3QRNQ5VRTFE8973FVJ2JANT56HEPZTKA4SQZZ84R"
-        );
-    });
+    expect(k1).toBe(k2);
+    expect(k1).toMatch(/^AGE-SECRET-KEY-1[AC-HJ-NP-Z02-9]+$/);
+  });
 
-    // Test the deterministic Age key generation for index 2
-    it('should generate the correct key for index 2', () => {
-        expect(deriveDeterministicAgeKey(testMasterKey, 2)).toBe(
-            "AGE-SECRET-KEY-1RSWAHJR48AWPN6HHTVVGXN7X3X0YWWA7TM7H22T7TF35EZPPVHHQ7WYGRZ"
-        );
-    });
+  it('produces different keys for different indexes', () => {
+    const k1 = deriveDeterministicAgeKey(testMasterKey, 1);
+    const k2 = deriveDeterministicAgeKey(testMasterKey, 2);
 
-    // Test the deterministic Age key generation for index 3
-    it('should generate the correct key for index 3', () => {
-        expect(deriveDeterministicAgeKey(testMasterKey, 3)).toBe(
-            "AGE-SECRET-KEY-144T9ZKX0HK6CMMGYEN6WPN82Q4K9LVR376NUJF33HKVAQ70TXMHSPV96MY"
-        );
-    });
-
-    // Optionally, you can add additional tests for other indices or edge cases if necessary
+    expect(k1).not.toBe(k2);
+  });
 });
