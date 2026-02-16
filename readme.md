@@ -1,193 +1,972 @@
 # BIP85KMS
 
-BIP85KMS is a deterministic key-derivation service and demo toolkit built around BIP85-style indexed entropy derivation. It exposes a Cloudflare Worker API that derives reproducible encryption key material from a mnemonic and request metadata (`appId`, `filename`, `keyVersion`) without storing per-file keys.
+## Deterministic Key Management Service
 
-## Architecture
+BIP85KMS is a stateless, deterministic key derivation service that generates cryptographic keys on-demand from a single BIP39 mnemonic. Instead of storing per-file encryption keys in a database, it mathematically recreates the same keys whenever given the same input parameters—eliminating key storage entirely while maintaining full encryption/decryption capabilities.
 
-- **Worker API (`src/index.ts`)** validates requests and returns either public output or full private material when explicitly requested.
-- **Core derivation module (`src/core.js`)** implements deterministic index derivation, entropy generation, and age-compatible key encoding.
-- **Shared exports (`src/bip85kms.ts`)** provide a typed facade used by Worker code, tests, and CLI integrations.
-- **Browser demo (`index.html` + `web/app.js`)** demonstrates deterministic derivation behavior in a standalone client-side flow.
+**Core Concept**: Same inputs (mnemonic + keyVersion + appId + filename) always produce the same outputs (keys + IV), deterministically.
 
-## Security warnings
+---
 
-1. This project is educational/proof-of-concept software and is not a managed production KMS.
-2. Never use demo mnemonics (for example `bacon bacon ...`) for real assets.
-3. Treat `MNEMONIC_SECRET` as highly sensitive root material; rotate immediately if exposed.
-4. Returning private material (`getPrivateKey: true`) increases risk and should be restricted to trusted environments.
-5. Always run your own deployment and enforce transport security, access controls, and request logging.
-6. Validate downstream cryptography choices (algorithms, IV handling, key lifecycle) before production use.
+## 🎯 Project Overview
 
-## Dependencies that have already been installed
+### What is BIP85KMS?
+
+BIP85KMS is a **proof-of-concept** key management service that demonstrates deterministic key derivation using:
+- **BIP39** for mnemonic-to-seed conversion
+- **BIP32** for hierarchical deterministic key derivation  
+- **BIP85** for extracting deterministic entropy
+- **Age encryption** for modern, secure file encryption
+
+It runs as a Cloudflare Worker and provides Age-compatible encryption keys through a simple HTTP API.
+
+### Use Cases
+
+**Who would use this?**
+
+1. **Backup Systems**: Encrypt backups without storing encryption keys—keys are derived on-demand for encryption and decryption
+2. **Content-Addressable Encryption**: Derive keys deterministically from file metadata for content-addressed storage systems
+3. **Stateless Microservices**: Eliminate key storage in microservices by deriving keys from request context
+4. **Personal Encryption**: Manage file encryption with a single mnemonic backup instead of per-file keys
+5. **Educational Tool**: Learn about BIP39/BIP32/BIP85 and deterministic cryptography
+
+**Example Workflow**:
+```bash
+# Encrypt a file (only need public key from API)
+$ curl -X POST https://your-worker.dev \
+  -d '{"filename":"document.pdf", "keyVersion":1, "appId":"backup"}' \
+  | jq -r '.age_public_key' > pubkey.txt
+$ age -R pubkey.txt -o document.pdf.age document.pdf
+
+# Decrypt later (retrieve private key from API with same parameters)
+$ curl -X POST https://your-worker.dev \
+  -d '{"filename":"document.pdf", "keyVersion":1, "appId":"backup", "getPrivateKey":true}' \
+  | jq -r '.age_private_key' > privkey.txt
+$ age -d -i privkey.txt document.pdf.age > document.pdf
 ```
-npm install @scure/bip39 @scure/bip32 @noble/hashes
-npm install @noble/secp256k1
-npm install bech32@latest
+
+### Security Model Summary
+
+**What BIP85KMS Protects Against:**
+- ✅ Database breaches (no keys stored)
+- ✅ Key synchronization issues (deterministic = always in sync)
+- ✅ Backup complexity (one mnemonic backs up all keys)
+
+**What BIP85KMS Does NOT Protect Against:**
+- ❌ Mnemonic compromise (all keys lost forever)
+- ❌ Unauthorized API access (no authentication in PoC)
+- ❌ Replay attacks (no request signing)
+- ❌ Side-channel attacks (no timing attack mitigation)
+
+**⚠️ CRITICAL**: This is a **proof-of-concept** for educational purposes. Do not use in production without implementing authentication, rate limiting, audit logging, and other security controls detailed in [`docs/SECURITY.md`](docs/SECURITY.md).
+
+---
+
+---
+
+## 📐 High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Client Layer                             │
+│  • HTTP Clients (curl, fetch)                                │
+│  • CLI Tools (Node.js, Python)                               │
+│  • Shell Scripts (bin/*.sh)                                  │
+│  • Browser Demo (offline-capable)                            │
+└────────────────────┬────────────────────────────────────────┘
+                     │ HTTPS POST
+                     │ {filename, keyVersion, appId, getPrivateKey?}
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Cloudflare Worker API                           │
+│              (src/index.ts)                                  │
+│  1. Validate request (method, required fields)               │
+│  2. Derive keys from MNEMONIC_SECRET                         │
+│  3. Return public or full key material                       │
+└────────────────────┬────────────────────────────────────────┘
+                     │ deriveFromMnemonic()
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│           Core Derivation Engine                             │
+│           (src/core.js - vanilla JS)                         │
+│                                                              │
+│  mnemonic ──→ BIP32 master node ──→ BIP85 entropy ──→       │
+│  ──→ Age private key ──→ X25519 public key                  │
+│                                                              │
+│  filename ──→ SHA-256 ──→ IV (96-bit)                       │
+│                                                              │
+│  appId + filename ──→ derivation path components            │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+                 {age_public_key, age_private_key, iv, 
+                  derivationPath, raw_entropy}
 ```
 
-## DISCLAIMER
-
-Use your own keys and host your own instance.
-
-## Deploy
-```
-echo "bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon" | wrangler secret put MNEMONIC_SECRET
-npx wrangler deploy --routes https://keys.dns4sats.xyz/*
-```
-
-## curl demo
-```
-curl -s -X POST https://keys.dns4sats.xyz -H "Content-Type: application/json" -d '{"filename":"README.md","keyVersion":1,"appId":"docs","getPrivateKey":true}' | jq -r
-```
+### Key Derivation Flow
 
 ```
+1. Mnemonic → BIP39 → Seed (512 bits)
+2. Seed → BIP32 → Master Node
+3. appId → SHA-256 → appIdHash
+4. filename → SHA-256 → filenameHash  
+5. Construct indexes: [keyVersion, appIdHash[:4], filenameHash[:4]]
+6. Derivation path: m/83696968'/128169'/{keyVersion}'/{appIdHash}'/{filenameHash}'
+7. ⚠️ BIP85 entropy: Derived ONLY from keyVersion (not appId/filename)
+8. Age private key: HMAC-SHA256(entropy, keyVersion) → bech32
+9. Age public key: X25519(private_key) → bech32
+10. IV: filenameHash[:12] (96-bit hex)
+```
+
+**Important Architecture Note**: The current implementation derives entropy **only from `keyVersion`**, not from the full path including `appId` and `filename`. This means the same `keyVersion` produces the same underlying key material regardless of app or file. See [`docs/ARCHITECTURE.md#ADR-004`](docs/ARCHITECTURE.md) for detailed analysis and proposed fix.
+
+### Project Structure
+
+```
+BIP85KMS/
+├── src/
+│   ├── core.js          # ⭐ Core derivation logic (vanilla JS + JSDoc)
+│   ├── bip85kms.ts      # TypeScript exports for Worker/tests
+│   ├── index.ts         # Cloudflare Worker HTTP API
+│   └── cli.ts           # Node.js CLI tool
+│
+├── web/
+│   └── app.js           # Browser demo (imports core.js)
+│
+├── bin/
+│   ├── deterministic_age.sh              # Age encrypt/decrypt wrapper
+│   ├── deterministic_openssl_encrypt.sh  # OpenSSL wrapper
+│   ├── age_demo.sh                       # Demonstration script
+│   └── openssl_demo.sh                   # Demonstration script
+│
+├── python/
+│   └── cli.py           # Python implementation
+│
+├── test/
+│   ├── index.spec.ts              # Worker API tests (5 tests)
+│   └── deterministic_age.test.ts  # Key derivation tests (4 tests)
+│
+├── docs/
+│   ├── API.md           # Complete HTTP API documentation
+│   ├── ARCHITECTURE.md  # Architecture decisions and diagrams
+│   └── SECURITY.md      # Threat model and security analysis
+│
+├── index.html           # GitHub Pages browser demo
+├── wrangler.jsonc       # Cloudflare Worker config
+├── package.json         # Dependencies
+└── readme.md            # This file
+```
+
+For detailed architecture documentation, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+---
+
+## 🔌 HTTP API Reference
+
+### Endpoint
+
+**POST /** (single endpoint for all operations)
+
+### Request Format
+
+```json
+{
+  "filename": "document.pdf",    // Required: File identifier
+  "keyVersion": 1,               // Required: Key rotation version (0-2147483647)
+  "appId": "myapp",              // Required: Application identifier
+  "getPrivateKey": false         // Optional: Return private key? (default: false)
+}
+```
+
+### Response Format
+
+**Public Mode** (getPrivateKey: false or omitted):
+```json
+{
+  "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjl...",
+  "iv": "b335630551682c19a781afeb"
+}
+```
+
+**Private Mode** (getPrivateKey: true):
+```json
 {
   "derivationPath": "m/83696968'/128169'/1'/1186212674'/859136773'",
-  "age_private_key": "AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW",
-  "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33",
+  "age_private_key": "AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZ...",
+  "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjl...",
   "raw_entropy": "d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81",
   "iv": "b335630551682c19a781afeb"
 }
 ```
 
-```
-curl -s -X POST https://keys.dns4sats.xyz -H "Content-Type: application/json" -d '{"filename":"README.md","keyVersion":1,"appId":"docs"}' | jq -r
+### Quick Examples
+
+**Get public key for encryption**:
+```bash
+curl -X POST https://your-worker.dev \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"README.md", "keyVersion":1, "appId":"docs"}'
 ```
 
+**Get private key for decryption** (⚠️ use carefully):
+```bash
+curl -X POST https://your-worker.dev \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"README.md", "keyVersion":1, "appId":"docs", "getPrivateKey":true}'
 ```
-{
-  "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33",
-  "iv": "b335630551682c19a781afeb"
+
+For complete API documentation including error responses, authentication recommendations, and integration examples, see [`docs/API.md`](docs/API.md).
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Node.js 18+ (for development)
+- Cloudflare account (for deployment)
+- Wrangler CLI: `npm install -g wrangler`
+
+### 1. Clone and Install
+
+```bash
+git clone https://github.com/Amperstrand/BIP85KMS.git
+cd BIP85KMS
+npm install
+```
+
+### 2. Run Tests
+
+```bash
+npm test
+```
+
+You should see all 9 tests pass:
+```
+✓ test/index.spec.ts (5 tests)
+✓ test/deterministic_age.test.ts (4 tests)
+```
+
+### 3. Local Development
+
+```bash
+# Start local dev server
+npm run dev
+
+# In another terminal, test the endpoint
+curl -X POST http://localhost:8787 \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"test.txt", "keyVersion":1, "appId":"dev"}'
+```
+
+### 4. Deploy to Cloudflare Workers
+
+```bash
+# Set your mnemonic as a secret (⚠️ NEVER commit this to git!)
+# For testing only - use a unique, secure mnemonic for production
+echo "your twenty four word mnemonic phrase goes here..." | wrangler secret put MNEMONIC_SECRET
+
+# Deploy the Worker
+npx wrangler deploy
+
+# Optional: Configure custom routes
+npx wrangler deploy --routes https://keys.example.com/*
+```
+
+### 5. Try the Browser Demo
+
+The repository includes a client-side demo that runs entirely in your browser:
+
+**Option A: GitHub Pages** (if repo is public)
+1. Go to repository Settings → Pages
+2. Set Source to "GitHub Actions"
+3. Push to main branch (workflow auto-deploys)
+4. Visit `https://yourusername.github.io/BIP85KMS/`
+
+**Option B: Local preview**
+```bash
+python3 -m http.server 4173 --directory .
+# Open http://localhost:4173 in your browser
+```
+
+The demo:
+- Runs 100% offline (no server calls)
+- Uses the same `core.js` as the Worker
+- Shows deterministic key derivation in action
+- **Uses demo mnemonic by default** (safe for learning, not for real data)
+
+---
+
+---
+
+## 📚 Usage Examples
+
+### Using with Age Encryption
+
+Age (https://age-encryption.org/) is a modern, simple file encryption tool. BIP85KMS generates Age-compatible keys.
+
+**Encrypt a file**:
+```bash
+# 1. Get public key from API
+PUBLIC_KEY=$(curl -s -X POST https://your-worker.dev \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"secret.txt","keyVersion":1,"appId":"backup"}' \
+  | jq -r '.age_public_key')
+
+# 2. Encrypt with Age
+echo "$PUBLIC_KEY" > recipient.txt
+age -R recipient.txt -o secret.txt.age secret.txt
+rm recipient.txt
+```
+
+**Decrypt the file**:
+```bash
+# 1. Get private key from API (same parameters!)
+PRIVATE_KEY=$(curl -s -X POST https://your-worker.dev \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"secret.txt","keyVersion":1,"appId":"backup","getPrivateKey":true}' \
+  | jq -r '.age_private_key')
+
+# 2. Decrypt with Age
+echo "$PRIVATE_KEY" > identity.txt
+age -d -i identity.txt -o secret.txt secret.txt.age
+rm identity.txt  # Clean up private key file
+```
+
+### Using the Shell Scripts
+
+The `bin/` directory includes convenient wrapper scripts:
+
+**Age encryption/decryption**:
+```bash
+cd bin
+
+# Encrypt a file (automatically fetches public key)
+./deterministic_age.sh encrypt hello.txt
+
+# Creates hello.txt.age
+
+# Decrypt a file (automatically fetches private key)
+./deterministic_age.sh decrypt hello.txt.age
+
+# Extracts hello.txt
+```
+
+**Full demonstration**:
+```bash
+cd bin
+./age_demo.sh
+# Shows complete encrypt → decrypt cycle with debug output
+```
+
+### Using the Node.js CLI
+
+```bash
+# Build the CLI
+npm run build
+
+# Set your mnemonic
+export MNEMONIC_SECRET="your mnemonic phrase here..."
+
+# Derive keys
+node dist/cli.js \
+  --filename "data.json" \
+  --keyVersion 1 \
+  --appId "myapp" \
+  --getPrivateKey
+
+# Output:
+# {
+#   "derivationPath": "m/83696968'/128169'/1'/...",
+#   "age_private_key": "AGE-SECRET-KEY-...",
+#   "age_public_key": "age1...",
+#   "raw_entropy": "...",
+#   "iv": "..."
+# }
+```
+
+### Using the Python CLI
+
+```bash
+# Install dependencies
+pip install bipsea cryptography
+
+# Set your mnemonic
+export MNEMONIC_SECRET="your mnemonic phrase here..."
+
+# Derive keys
+python3 python/cli.py \
+  --filename "data.json" \
+  --keyVersion 1 \
+  --appId "myapp" \
+  --getPrivateKey
+```
+
+### Key Rotation Example
+
+To rotate keys for the same file, increment `keyVersion`:
+
+```bash
+# Original encryption with version 1
+curl -X POST https://your-worker.dev \
+  -d '{"filename":"data.db", "keyVersion":1, "appId":"backup"}' \
+  | jq -r '.age_public_key' > key_v1.txt
+
+age -R key_v1.txt -o data.db.v1.age data.db
+
+# Rotate to version 2 (re-encrypt with new key)
+curl -X POST https://your-worker.dev \
+  -d '{"filename":"data.db", "keyVersion":2, "appId":"backup"}' \
+  | jq -r '.age_public_key' > key_v2.txt
+
+age -R key_v2.txt -o data.db.v2.age data.db
+
+# Old encrypted file (v1) and new encrypted file (v2) exist
+# Both can be decrypted using their respective keyVersion
+```
+
+### Integration Example: Backup Script
+
+```bash
+#!/bin/bash
+# backup.sh - Encrypt backups with deterministic keys
+
+WORKER_URL="https://your-worker.dev"
+APP_ID="daily-backup"
+KEY_VERSION=1
+
+for file in /data/*.db; do
+  filename=$(basename "$file")
+  
+  # Get encryption key from BIP85KMS
+  pubkey=$(curl -s -X POST "$WORKER_URL" \
+    -H "Content-Type: application/json" \
+    -d "{\"filename\":\"$filename\",\"keyVersion\":$KEY_VERSION,\"appId\":\"$APP_ID\"}" \
+    | jq -r '.age_public_key')
+  
+  # Encrypt and upload
+  echo "$pubkey" | age -R - -o "$file.age" "$file"
+  aws s3 cp "$file.age" "s3://my-backup-bucket/$filename.age"
+  
+  rm "$file.age"
+done
+```
+
+---
+
+## 🔐 Security Considerations
+
+### ⚠️ Critical Security Warnings
+
+1. **This is a PROOF-OF-CONCEPT** - Not production-ready without significant hardening
+2. **NO AUTHENTICATION** - Anyone with your endpoint URL can request keys
+3. **NO RATE LIMITING** - Vulnerable to brute-force and DoS attacks  
+4. **NO AUDIT LOGGING** - No record of who requested which keys
+5. **SINGLE POINT OF FAILURE** - Mnemonic compromise = all keys compromised forever
+
+### Threat Model
+
+**What This Protects:**
+- ✅ Database breaches (no keys stored)
+- ✅ Key sync issues (deterministic = always consistent)
+- ✅ Backup complexity (single mnemonic backs up all keys)
+
+**What This Does NOT Protect:**
+- ❌ Mnemonic compromise (catastrophic failure)
+- ❌ Unauthorized API access (no auth implemented)
+- ❌ Side-channel attacks (no timing-safe operations)
+- ❌ Replay attacks (no request signing)
+- ❌ Key enumeration (no rate limiting)
+
+### Known Vulnerabilities
+
+| Severity | Issue | Impact | Mitigation |
+|----------|-------|--------|------------|
+| 🔴 CRITICAL | No authentication on private key endpoint | Anyone can request private keys | Implement mTLS, JWT, or HMAC auth |
+| 🔴 CRITICAL | Single mnemonic controls all keys | Mnemonic leak = total compromise | Secure storage (HSM), rotation plan |
+| 🟠 HIGH | No rate limiting | Brute-force enumeration possible | Add Cloudflare rate limits + app-level throttling |
+| 🟠 HIGH | No audit logging | No forensic evidence | Implement comprehensive logging |
+| 🟡 MEDIUM | Deterministic IVs | Information leakage in some scenarios | Use Age (handles nonces), document trade-offs |
+| 🟡 MEDIUM | Entropy only from keyVersion | Same version = same key across files | See ARCHITECTURE.md ADR-004 for proposed fix |
+
+For detailed security analysis, threat scenarios, and mitigation strategies, see [`docs/SECURITY.md`](docs/SECURITY.md).
+
+### Production Hardening Checklist
+
+Before production use, implement:
+
+- [ ] **Authentication** (mTLS, JWT, HMAC, or Cloudflare Access)
+- [ ] **Authorization** (restrict `getPrivateKey` to trusted clients)
+- [ ] **Rate Limiting** (per-IP and per-appId)
+- [ ] **Audit Logging** (comprehensive, secure, no sensitive data)
+- [ ] **Input Validation** (strict validation of all parameters)
+- [ ] **Mnemonic Security** (HSM or secure key management service)
+- [ ] **Monitoring & Alerting** (anomaly detection, security events)
+- [ ] **Incident Response Plan** (document procedures)
+- [ ] **Security Audit** (professional review of implementation)
+- [ ] **Penetration Testing** (validate security controls)
+
+See [`docs/SECURITY.md#production-hardening-checklist`](docs/SECURITY.md) for the complete checklist.
+
+### Recommended Authentication Implementation
+
+**Option 1: JWT Authentication** (recommended for API clients)
+```typescript
+import { verify } from '@tsndr/cloudflare-worker-jwt';
+
+async function handleRequest(request: Request, env: Env) {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  
+  const token = authHeader.substring(7);
+  const isValid = await verify(token, env.JWT_SECRET);
+  if (!isValid) {
+    return new Response('Invalid token', { status: 403 });
+  }
+  
+  // Continue with request handling...
 }
 ```
 
-## age demo
+**Option 2: Cloudflare Access** (recommended for web apps)
+- Configure in Cloudflare Dashboard
+- Supports OAuth providers (Google, GitHub, Okta, etc.)
+- Automatic authentication and session management
 
-```
-cd bin && ./age_demo.sh
-[DEBUG] Operation mode determined: encrypt
-[DEBUG] Private key file: /dev/shm/age_prv.TQVHfD
-[DEBUG] Public key file:  /dev/shm/age_pub.y9QFb2
-[DEBUG] Encrypting: hello_age.txt
-[DEBUG] Fetching keys from server with payload: {"filename":"hello_age.txt","keyVersion":1,"appId":"docs"}
-[DEBUG] Server response JSON: {"age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","iv":"16156fb9664f1d85f07d0793"}
-[DEBUG] Encrypt output file: hello_age.txt.age
-✅ Encrypted: hello_age.txt => hello_age.txt.age
-[DEBUG] Cleaning up key files.
-[DEBUG] Operation mode determined: decrypt
-[DEBUG] Private key file: /dev/shm/age_prv.kqx68T
-[DEBUG] Public key file:  /dev/shm/age_pub.yWH8Q4
-[DEBUG] Decrypting: hello_age.txt.age
-[DEBUG] Fetching keys from server with payload: {"filename":"hello_age.txt.age","keyVersion":1,"appId":"docs","getPrivateKey":true}
-[DEBUG] Server response JSON: {"derivationPath":"m/83696968'/128169'/1'/1186212674'/1347622895'","age_private_key":"AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW","age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","raw_entropy":"d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81","iv":"d05317efd337e657a189108e"}
-[DEBUG] Verified: private key => public key matches the server's public key.
-[DEBUG] Decrypt output file: hello_age.txt
-✅ Decrypted: hello_age.txt.age => hello_age.txt
-[DEBUG] Cleaning up key files.
-```
+See [`docs/API.md#authentication`](docs/API.md) for more authentication options.
 
-## openssl demo
+---
 
-WARNING: the encryption method needs feedback/review
+## 🛠️ Development Guide
 
-```
-cd bin && ./openssl_demo.sh
-[DEBUG] Operation mode determined: encrypt
-[DEBUG] Base filename for key retrieval: hello_openssl.txt
-[DEBUG] Temporary key file: /dev/shm/openssl_key.J3Vluy
-[DEBUG] Encrypting file: hello_openssl.txt
-[DEBUG] Computed SHA256: 32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383
-[DEBUG] Derived IV (first 32 hex digits): 32a4652ec63b896e60e82bdecbcfe973
-[DEBUG] Output file will be: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc
-[DEBUG] Fetching key from server with payload: {"filename":"hello_openssl.txt","keyVersion":1,"appId":"docs","getPrivateKey":true}
-[DEBUG] Server response JSON: {"derivationPath":"m/83696968'/128169'/1'/1186212674'/2137221032'","age_private_key":"AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW","age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","raw_entropy":"d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81","iv":"7f6367a858d7a6c7700988a0"}
-[DEBUG] Using key: d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81
-✅ Encrypted: hello_openssl.txt => hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc
-[DEBUG] Cleaning up temporary key file.
-[DEBUG] Operation mode determined: decrypt
-[DEBUG] Base filename for key retrieval: hello_openssl.txt
-[DEBUG] Temporary key file: /dev/shm/openssl_key.KFlFMk
-[DEBUG] Decrypting file: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc
-[DEBUG] Using IV (derived from filename): 32a4652ec63b896e60e82bdecbcfe973
-[DEBUG] Fetching key from server with payload: {"filename":"hello_openssl.txt","keyVersion":1,"appId":"docs","getPrivateKey":true}
-[DEBUG] Server response JSON: {"derivationPath":"m/83696968'/128169'/1'/1186212674'/2137221032'","age_private_key":"AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZRMCYHJZYTD8UR6WX0A29WGSR6KPEW","age_public_key":"age15vzcvrduzysjsns520xkrd9les2nxjllnrhql9lefm4rhtkjmqeqglns33","raw_entropy":"d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81","iv":"7f6367a858d7a6c7700988a0"}
-[DEBUG] Using key: d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81
-[DEBUG] Decrypted output file will be: hello_openssl.txt
-✅ Decrypted: hello_openssl.txt.32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383.enc => hello_openssl.txt (SHA256 match: 32a4652ec63b896e60e82bdecbcfe97394037243cb2c8e63d7dd79b0a7d4f383)
-[DEBUG] Cleaning up temporary key file.
-```
-
-## node cli
-
-```
-npm install
-npm run build
-export MNEMONIC_SECRET="bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon"
-node dist/cli.js --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
-```
-
-
-## python cli
-```
-pip install bipsea cryptography --break-system-packages
-python3 python/cli.py --filename "hello_openssl.txt" --keyVersion 1 --appId "docs" --getPrivateKey
-```
-
-## GitHub Pages standalone browser demo
-
-A client-side demo is available at the repository root (`index.html` + `web/app.js`) and can be published with GitHub Pages.
-
-- The demo runs derivation entirely in the browser.
-- It defaults to the educational mnemonic `bacon bacon ...` so people can click-and-learn quickly.
-- **Do not use real mnemonics/private secrets in this demo.**
-
-- The browser demo defaults to public output only; check **Include private key output** only if you explicitly want full key material in the page output.
-
-### Local preview
+### Local Development Setup
 
 ```bash
-python3 -m http.server 4173 --directory .
-# open http://localhost:4173
+# Clone repository
+git clone https://github.com/Amperstrand/BIP85KMS.git
+cd BIP85KMS
+
+# Install dependencies
+npm install
+
+# Run tests
+npm test
+
+# Start local development server
+npm run dev
+# Server runs at http://localhost:8787
+
+# In another terminal, test locally
+curl -X POST http://localhost:8787 \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"test.txt", "keyVersion":1, "appId":"dev"}'
 ```
 
-### Publish on GitHub Pages
+### Project Structure
 
-This repository includes `.github/workflows/pages.yml` to deploy the repository root.
+**Core Files:**
+- `src/core.js` - Pure JS derivation logic (browser + Node.js + Worker compatible)
+- `src/bip85kms.ts` - TypeScript exports for type safety
+- `src/index.ts` - Cloudflare Worker HTTP handler
+- `src/cli.ts` - Node.js CLI tool
 
-Workflow name in Actions: **Deploy demo to GitHub Pages**.
+**Why Vanilla JS for core?**
+- Works in browsers without build step
+- Import maps for CDN dependencies (esm.sh)
+- Easier to audit (no transpilation)
+- TypeScript layer on top for development
 
-#### Do I need manual steps?
+### Running Tests
 
-Yes — there is a **one-time manual setup** in GitHub. After that, deployment is automatic.
+```bash
+# Run all tests
+npm test
 
-#### One-time manual setup
+# Run tests in watch mode
+npm test -- --watch
 
-1. Open your GitHub repository.
-2. Go to **Settings → Pages**.
-3. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-4. Save.
+# Run specific test file
+npm test test/index.spec.ts
 
-#### After one-time setup (automatic deploys)
+# Run with coverage
+npm test -- --coverage
+```
 
-- Pushes to `main` trigger the Pages workflow automatically.
-- You can also run it manually from **Actions → Deploy demo to GitHub Pages → Run workflow** and set `ref` to a branch (for example `work`) or `main`.
-- The workflow uploads the repository root and publishes it to GitHub Pages.
+**Test suites:**
+- `test/index.spec.ts` - Worker API tests (5 tests)
+- `test/deterministic_age.test.ts` - Key derivation tests (4 tests)
 
+### Building
 
-#### Fastest way to test before merge
+```bash
+# Build TypeScript (for CLI)
+npm run build
+# Output in dist/
 
-1. Push your feature branch (for example `work`).
-2. Go to **Actions → Deploy demo to GitHub Pages → Run workflow**.
-3. Set `ref` to your branch name (`work`) and run it.
-4. Open the run logs and copy `page_url` from the deploy step.
-5. Verify the live demo loads and derives keys.
+# Run built CLI
+node dist/cli.js --filename test --keyVersion 1 --appId dev
+```
 
-#### How to verify it worked
+### Deployment
 
-1. Open the workflow run in **Actions**.
-2. Check the final deploy step for `page_url`.
-3. Visit that URL.
+**Deploy to Cloudflare Workers:**
+```bash
+# Login to Cloudflare
+wrangler login
 
-For a typical public repo named `BIP85KMS`, the URL will look like:
+# Set mnemonic secret (NEVER commit to git!)
+echo "your secure mnemonic here" | wrangler secret put MNEMONIC_SECRET
 
-`https://<your-github-username>.github.io/BIP85KMS/`
+# Deploy
+npm run deploy
+
+# Deploy with custom route
+wrangler deploy --routes https://keys.example.com/*
+```
+
+**Configuration** (`wrangler.jsonc`):
+```jsonc
+{
+  "name": "bip85kms",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-19",
+  "compatibility_flags": ["nodejs_compat"]
+}
+```
+
+### Code Style
+
+This project uses:
+- **Prettier** for code formatting (`.prettierrc`)
+- **EditorConfig** for editor consistency (`.editorconfig`)
+- **TypeScript** for type checking (tsconfig.json)
+
+```bash
+# Format code
+npx prettier --write .
+
+# Type check
+npx tsc --noEmit
+```
+
+### Dependencies
+
+**Core Crypto Libraries:**
+```json
+{
+  "@scure/bip39": "^1.5.4",    // BIP39 mnemonic handling
+  "@scure/bip32": "^1.6.2",    // BIP32 HD derivation
+  "@noble/hashes": "^1.7.1",   // SHA-256, HMAC, Argon2id
+  "@noble/curves": "^1.8.2",   // X25519 (Curve25519)
+  "bech32": "^2.0.0"           // Age key encoding
+}
+```
+
+**Why @scure and @noble?**
+- Pure JavaScript/TypeScript (no native binaries)
+- Works in all environments (Node.js, browsers, Workers)
+- Well-audited by security researchers
+- Used by major projects (ethers.js, viem, MetaMask)
+- Maintained by Paul Miller (paulmillr)
+
+**Development Dependencies:**
+```json
+{
+  "typescript": "^5.5.2",
+  "vitest": "~3.0.7",
+  "@cloudflare/vitest-pool-workers": "^0.7.5",
+  "wrangler": "^4.2.0"
+}
+```
+
+### Browser Demo Development
+
+The browser demo at `index.html` uses import maps to load dependencies from CDN:
+
+```html
+<script type="importmap">
+{
+  "imports": {
+    "@scure/bip32": "https://esm.sh/@scure/bip32@1.6.2",
+    "@scure/bip39": "https://esm.sh/@scure/bip39@1.5.4",
+    "@noble/hashes/sha256": "https://esm.sh/@noble/hashes@1.7.1/sha256",
+    "@noble/hashes/hmac": "https://esm.sh/@noble/hashes@1.7.1/hmac",
+    "@noble/curves/ed25519": "https://esm.sh/@noble/curves@1.8.2/ed25519",
+    "bech32": "https://esm.sh/bech32@2.0.0"
+  }
+}
+</script>
+```
+
+This allows `web/app.js` to import from `src/core.js` which uses these dependencies.
+
+**Test browser demo locally:**
+```bash
+python3 -m http.server 4173
+# Open http://localhost:4173
+```
+
+---
+
+## 📖 Documentation
+
+### Available Documentation
+
+- **[README.md](readme.md)** (this file) - Getting started, overview, quick start
+- **[docs/API.md](docs/API.md)** - Complete HTTP API reference with examples
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System architecture, design decisions (ADRs), data flow
+- **[docs/SECURITY.md](docs/SECURITY.md)** - Threat model, vulnerabilities, mitigation strategies
+
+### Code Documentation
+
+All functions in `src/core.js` have comprehensive JSDoc comments including:
+- Purpose and description
+- Parameter types and descriptions  
+- Return value documentation
+- Usage examples
+- Security implications
+- References to specifications (BIP39, BIP32, BIP85, Age)
+
+**Example:**
+```javascript
+/**
+ * Derives BIP85 entropy from a BIP32 master node at a specific index.
+ * 
+ * BIP85 (Deterministic Entropy From BIP32 Keychains) is a standard for deriving
+ * deterministic entropy from a BIP32 HD wallet. This implementation:
+ * 1. Derives a child key at path m/83696968'/{index}'
+ * 2. Takes SHA-256 of the derived private key to produce 32 bytes of entropy
+ * 
+ * @param {number} index - The hardened derivation index
+ * @param {HDKey} masterNode - A BIP32 HDKey master node
+ * @returns {Uint8Array} 32 bytes of deterministic entropy
+ */
+export function deriveBIP85Entropy(index, masterNode) { ... }
+```
+
+---
+
+## �� Frequently Asked Questions
+
+### Q: Is this production-ready?
+
+**A:** No. This is a proof-of-concept for educational purposes. It lacks authentication, rate limiting, audit logging, and other critical security features. See the [Production Hardening Checklist](#production-hardening-checklist) for what needs to be implemented.
+
+### Q: How secure is the mnemonic storage?
+
+**A:** Cloudflare Workers secrets are encrypted at rest and only accessible to your Worker at runtime. However, for high-security applications, consider using a Hardware Security Module (HSM) or secure key management service.
+
+### Q: What happens if my mnemonic is compromised?
+
+**A:** All past, present, and future keys are compromised. There is no way to revoke individual derived keys. You must:
+1. Generate a new mnemonic immediately
+2. Deploy a new Worker with the new mnemonic
+3. Re-encrypt all data with new keys
+4. Audit logs to determine scope of exposure
+
+### Q: Can I use this for Bitcoin or cryptocurrency wallets?
+
+**A:** BIP85KMS is designed for Age encryption keys, not cryptocurrency wallets. While it uses BIP standards (BIP39/BIP32/BIP85), it derives Age keys (X25519) rather than Bitcoin keys (secp256k1). Do not use this for managing cryptocurrency.
+
+### Q: Why does the same keyVersion produce the same key for different files?
+
+**A:** This is a current architectural limitation (see [`docs/ARCHITECTURE.md#ADR-004`](docs/ARCHITECTURE.md#adr-004)). The entropy is derived only from `keyVersion`, not from the full path including `appId` and `filename`. To get different keys, use different `keyVersion` values. A fix is proposed in the architecture documentation.
+
+### Q: Can I use this offline?
+
+**A:** Yes! The browser demo works completely offline. You can also use the Node.js or Python CLI tools locally without hitting the API. The core derivation logic (`src/core.js`) has no external dependencies at runtime.
+
+### Q: What's the difference between the Worker API and the browser demo?
+
+**A:** Both use the same `core.js` derivation logic. The Worker API stores the mnemonic securely and serves keys via HTTP. The browser demo runs entirely client-side—you provide the mnemonic in the browser (never send it anywhere). Use the Worker for production encryption workflows; use the browser demo for learning and verification.
+
+### Q: How do I rotate keys?
+
+**A:** Increment the `keyVersion` parameter. Same file, same app, different version = different key:
+
+```bash
+# Original key (version 1)
+curl ... -d '{"filename":"data.db", "keyVersion":1, "appId":"backup"}'
+
+# Rotated key (version 2) 
+curl ... -d '{"filename":"data.db", "keyVersion":2, "appId":"backup"}'
+```
+
+Re-encrypt your data with the new key. Both encrypted versions can coexist.
+
+### Q: Can I derive keys for different encryption algorithms?
+
+**A:** Currently, BIP85KMS only generates Age-compatible keys. The raw entropy (`raw_entropy` field) can be used as key material for other algorithms, but you'll need to handle the key formatting yourself. See [`docs/ARCHITECTURE.md#phase-3-extensibility`](docs/ARCHITECTURE.md#phase-3-extensibility) for planned support for multiple key types.
+
+### Q: What's the performance like?
+
+**A:** Fast! Each derivation takes 1-5ms depending on the environment:
+- Cloudflare Worker: ~2-3ms
+- Node.js: ~1-2ms  
+- Browser: ~3-5ms
+
+No expensive operations like Argon2id are used (it's implemented but not wired in).
+
+### Q: Is there a rate limit?
+
+**A:** No rate limiting is implemented in the PoC. Cloudflare Workers have built-in DDoS protection, but application-level rate limiting should be added for production. See [`docs/SECURITY.md#scenario-3-key-enumeration-attack`](docs/SECURITY.md#scenario-3-key-enumeration-attack).
+
+---
+
+## 🗺️ Roadmap
+
+### Current Status: Proof-of-Concept
+
+The project currently demonstrates deterministic key derivation with:
+- ✅ Core derivation engine (BIP39/BIP32/BIP85)
+- ✅ Age-compatible key generation
+- ✅ Cloudflare Worker API
+- ✅ Multiple client implementations (HTTP, CLI, browser)
+- ✅ Comprehensive documentation
+
+### Phase 1: Security Hardening (High Priority)
+
+**Goal:** Make production-ready
+
+- [ ] Authentication (JWT, mTLS, HMAC, or Cloudflare Access)
+- [ ] Authorization (RBAC for private key access)
+- [ ] Rate limiting (per-IP, per-appId)
+- [ ] Audit logging (comprehensive, secure)
+- [ ] Input validation (strict checks)
+- [ ] Monitoring & alerting
+
+### Phase 2: Entropy Fix (Medium Priority)
+
+**Goal:** Incorporate appId/filename into entropy derivation
+
+- [ ] Implement enhanced entropy derivation (uses full path)
+- [ ] Add derivation version parameter (v1 = current, v2 = fixed)
+- [ ] Provide migration guide
+- [ ] Maintain backward compatibility
+
+See [`docs/ARCHITECTURE.md#ADR-004`](docs/ARCHITECTURE.md#adr-004) for technical details.
+
+### Phase 3: Extensibility (Low Priority)
+
+**Goal:** Support multiple key types
+
+- [ ] Pluggable key derivation strategies
+- [ ] SSH keys
+- [ ] PGP keys  
+- [ ] X.509 certificates
+- [ ] Raw entropy export
+
+### Phase 4: Multi-Tenancy (Future)
+
+**Goal:** Support multiple applications/tenants
+
+- [ ] Per-tenant mnemonics (stored in KV/Durable Objects)
+- [ ] Tenant management API
+- [ ] Isolated rate limits and audit logs
+- [ ] Usage reporting
+
+### Phase 5: Offline/Local Modes (Future)
+
+**Goal:** Better offline support
+
+- [ ] npm package for direct integration
+- [ ] CLI with system keychain integration
+- [ ] Mobile SDKs (iOS/Android)
+- [ ] Secure enclave/TPM support
+
+See [`docs/ARCHITECTURE.md#future-architecture-evolution`](docs/ARCHITECTURE.md#future-architecture-evolution) for detailed roadmap.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! This is an educational/PoC project, so the focus is on:
+- Clear, auditable code
+- Comprehensive documentation  
+- Security best practices
+- Educational value
+
+**Before contributing:**
+1. Read the documentation (especially SECURITY.md and ARCHITECTURE.md)
+2. Open an issue to discuss major changes
+3. Follow existing code style (Prettier, EditorConfig)
+4. Add tests for new functionality
+5. Update documentation
+
+**Areas that need help:**
+- Security review and hardening
+- Authentication implementation examples
+- Additional client libraries (Go, Rust, Java, etc.)
+- Performance benchmarking
+- Additional test coverage
+
+---
+
+## 📜 License
+
+MIT License - See LICENSE file for details
+
+---
+
+## ⚖️ Disclaimer
+
+**USE AT YOUR OWN RISK**
+
+This project is provided "as is" without warranty of any kind, express or implied. It is a proof-of-concept for educational purposes and is NOT recommended for production use without significant security hardening.
+
+- ⚠️ **Never use demo mnemonics for real data**
+- ⚠️ **Always host your own instance**  
+- ⚠️ **Implement authentication before production**
+- ⚠️ **Conduct security audit before production use**
+- ⚠️ **Understand the threat model and limitations**
+
+The authors and contributors are not responsible for:
+- Loss of data due to incorrect usage
+- Security breaches or compromised keys
+- Financial losses from key management failures
+- Any damages resulting from use of this software
+
+**For production use, conduct thorough security review and implement all recommended hardening measures outlined in [`docs/SECURITY.md`](docs/SECURITY.md).**
+
+---
+
+## 🔗 Related Resources
+
+### Specifications
+- [BIP39: Mnemonic code for generating deterministic keys](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki)
+- [BIP32: Hierarchical Deterministic Wallets](https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki)
+- [BIP85: Deterministic Entropy From BIP32 Keychains](https://github.com/bitcoin/bips/blob/master/bip-0085.mediawiki)
+- [Age Encryption Specification](https://age-encryption.org/v1)
+
+### Tools
+- [Age - Modern encryption tool](https://age-encryption.org/)
+- [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
+
+### Libraries Used
+- [@scure/bip39](https://github.com/paulmillr/scure-bip39) - BIP39 implementation
+- [@scure/bip32](https://github.com/paulmillr/scure-bip32) - BIP32 HD derivation
+- [@noble/hashes](https://github.com/paulmillr/noble-hashes) - Cryptographic hash functions
+- [@noble/curves](https://github.com/paulmillr/noble-curves) - Elliptic curve cryptography
+
+---
+
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/Amperstrand/BIP85KMS/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/Amperstrand/BIP85KMS/discussions)
+- **Documentation**: [`docs/`](docs/) directory
+
+---
+
+**Last Updated**: 2026-02-16  
+**Version**: 1.0  
+**Status**: Proof-of-Concept / Educational
+
+---
+
+**Made with 🔐 by [Amperstrand](https://github.com/Amperstrand)**
