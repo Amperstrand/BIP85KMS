@@ -1,3 +1,23 @@
+# BIP85KMS
+
+BIP85KMS is a deterministic key-derivation service and demo toolkit built around BIP85-style indexed entropy derivation. It exposes a Cloudflare Worker API that derives reproducible encryption key material from a mnemonic and request metadata (`appId`, `filename`, `keyVersion`) without storing per-file keys.
+
+## Architecture
+
+- **Worker API (`src/index.ts`)** validates requests and returns either public output or full private material when explicitly requested.
+- **Core derivation module (`src/core.js`)** implements deterministic index derivation, entropy generation, and age-compatible key encoding.
+- **Shared exports (`src/bip85kms.ts`)** provide a typed facade used by Worker code, tests, and CLI integrations.
+- **Browser demo (`index.html` + `web/app.js`)** demonstrates deterministic derivation behavior in a standalone client-side flow.
+
+## Security warnings
+
+1. This project is educational/proof-of-concept software and is not a managed production KMS.
+2. Never use demo mnemonics (for example `bacon bacon ...`) for real assets.
+3. Treat `MNEMONIC_SECRET` as highly sensitive root material; rotate immediately if exposed.
+4. Returning private material (`getPrivateKey: true`) increases risk and should be restricted to trusted environments.
+5. Always run your own deployment and enforce transport security, access controls, and request logging.
+6. Validate downstream cryptography choices (algorithms, IV handling, key lifecycle) before production use.
+
 ## Dependencies that have already been installed
 ```
 npm install @scure/bip39 @scure/bip32 @noble/hashes
@@ -7,7 +27,7 @@ npm install bech32@latest
 
 ## DISCLAIMER
 
-not tested. just a proof of concept. Use your own keys. Host your own instance.
+Use your own keys and host your own instance.
 
 ## Deploy
 ```
@@ -115,7 +135,7 @@ python3 python/cli.py --filename "hello_openssl.txt" --keyVersion 1 --appId "doc
 
 ## GitHub Pages standalone browser demo
 
-A client-side demo is available in `docs/` and can be published with GitHub Pages.
+A client-side demo is available at the repository root (`index.html` + `web/app.js`) and can be published with GitHub Pages.
 
 - The demo runs derivation entirely in the browser.
 - It defaults to the educational mnemonic `bacon bacon ...` so people can click-and-learn quickly.
@@ -126,13 +146,13 @@ A client-side demo is available in `docs/` and can be published with GitHub Page
 ### Local preview
 
 ```bash
-python3 -m http.server 4173 --directory docs
+python3 -m http.server 4173 --directory .
 # open http://localhost:4173
 ```
 
 ### Publish on GitHub Pages
 
-This repository includes `.github/workflows/pages.yml` to deploy `docs/`.
+This repository includes `.github/workflows/pages.yml` to deploy the repository root.
 
 Workflow name in Actions: **Deploy demo to GitHub Pages**.
 
@@ -151,7 +171,7 @@ Yes — there is a **one-time manual setup** in GitHub. After that, deployment i
 
 - Pushes to `main` trigger the Pages workflow automatically.
 - You can also run it manually from **Actions → Deploy demo to GitHub Pages → Run workflow** and set `ref` to a branch (for example `work`) or `main`.
-- The workflow uploads `docs/` and publishes it to GitHub Pages.
+- The workflow uploads the repository root and publishes it to GitHub Pages.
 
 
 #### Fastest way to test before merge
