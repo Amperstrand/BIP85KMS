@@ -1,10 +1,10 @@
 # BIP85KMS
 
-## Deterministic Key Management Service
+## Deterministic Key Management with Semantic Paths
 
-BIP85KMS is a stateless, deterministic key derivation service that generates cryptographic keys on-demand from a single BIP39 mnemonic. Instead of storing per-file encryption keys in a database, it mathematically recreates the same keys whenever given the same input parameters—eliminating key storage entirely while maintaining full encryption/decryption capabilities.
+BIP85KMS is a stateless, deterministic key derivation service that generates cryptographic keys on-demand from a single BIP39 mnemonic. Using **BIP-Keychain semantic paths**, it transforms abstract derivation paths into self-documenting, meaningful structures using JSON-LD and schema.org vocabulary.
 
-**Core Concept**: Same inputs (mnemonic + keyVersion + appId + filename) always produce the same outputs (keys + IV), deterministically.
+**Core Concept**: Semantic paths like `[{"@type":"Organization","name":"AcmeCorp"}, {"@type":"DigitalDocument","name":"report.pdf"}]` are cryptographically transformed into deterministic derivation paths, eliminating key storage entirely while maintaining human-readable context.
 
 ---
 
@@ -16,33 +16,63 @@ BIP85KMS is a **proof-of-concept** key management service that demonstrates dete
 - **BIP39** for mnemonic-to-seed conversion
 - **BIP32** for hierarchical deterministic key derivation  
 - **BIP85** for extracting deterministic entropy
+- **BIP-Keychain** for semantic path derivation using JSON-LD
 - **Age encryption** for modern, secure file encryption
 
 It runs as a Cloudflare Worker and provides Age-compatible encryption keys through a simple HTTP API.
+
+### What are Semantic Paths?
+
+Instead of opaque numbers like `m/83696968'/128169'/1'/1837461928'/746291835'`, semantic paths use meaningful JSON-LD objects:
+
+```json
+[
+  {"@type": "Organization", "name": "AcmeCorp"},
+  {"@type": "SoftwareApplication", "name": "backup-system"},
+  {"@type": "DigitalDocument", "name": "database.sql"}
+]
+```
+
+**Benefits:**
+- 🔍 **Self-documenting**: Know what each key is for without a database
+- 🔒 **Collision-resistant**: Same segment at different positions = different keys
+- 📊 **Order-sensitive**: Path order matters for security
+- 🔄 **Deterministic**: Same input always produces same keys
 
 ### Use Cases
 
 **Who would use this?**
 
-1. **Backup Systems**: Encrypt backups without storing encryption keys—keys are derived on-demand for encryption and decryption
-2. **Content-Addressable Encryption**: Derive keys deterministically from file metadata for content-addressed storage systems
-3. **Stateless Microservices**: Eliminate key storage in microservices by deriving keys from request context
-4. **Personal Encryption**: Manage file encryption with a single mnemonic backup instead of per-file keys
-5. **Educational Tool**: Learn about BIP39/BIP32/BIP85 and deterministic cryptography
+1. **Backup Systems**: Derive keys with semantic context (org/app/file) for easy key management
+2. **Multi-tenant Systems**: Isolate keys by organization and application using semantic namespaces
+3. **Stateless Microservices**: Eliminate key storage by deriving from request metadata
+4. **API Authentication**: Derive consistent keys for services using semantic identifiers
+5. **Educational Tool**: Learn about BIP39/BIP32/BIP85 and semantic key derivation
 
 **Example Workflow**:
 ```bash
 # Encrypt a file (only need public key from API)
 $ curl -X POST https://your-worker.dev \
-  -d '{"filename":"document.pdf", "keyVersion":1, "appId":"backup"}' \
-  | jq -r '.age_public_key' > pubkey.txt
-$ age -R pubkey.txt -o document.pdf.age document.pdf
+  -H "Content-Type: application/json" \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "AcmeCorp"},
+      {"@type": "DigitalDocument", "name": "report.pdf"}
+    ]
+  }' | jq -r '.age_public_key' > pubkey.txt
+$ age -R pubkey.txt -o report.pdf.age report.pdf
 
-# Decrypt later (retrieve private key from API with same parameters)
+# Decrypt later (same semantic path retrieves same key)
 $ curl -X POST https://your-worker.dev \
-  -d '{"filename":"document.pdf", "keyVersion":1, "appId":"backup", "getPrivateKey":true}' \
-  | jq -r '.age_private_key' > privkey.txt
-$ age -d -i privkey.txt document.pdf.age > document.pdf
+  -H "Content-Type: application/json" \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "AcmeCorp"},
+      {"@type": "DigitalDocument", "name": "report.pdf"}
+    ],
+    "getPrivateKey": true
+  }' | jq -r '.age_private_key' > privkey.txt
+$ age -d -i privkey.txt report.pdf.age > report.pdf
 ```
 
 ### Security Model Summary
@@ -51,6 +81,7 @@ $ age -d -i privkey.txt document.pdf.age > document.pdf
 - ✅ Database breaches (no keys stored)
 - ✅ Key synchronization issues (deterministic = always in sync)
 - ✅ Backup complexity (one mnemonic backs up all keys)
+- ✅ Key confusion (semantic paths are self-documenting)
 
 **What BIP85KMS Does NOT Protect Against:**
 - ❌ Mnemonic compromise (all keys lost forever)
@@ -59,8 +90,6 @@ $ age -d -i privkey.txt document.pdf.age > document.pdf
 - ❌ Side-channel attacks (no timing attack mitigation)
 
 **⚠️ CRITICAL**: This is a **proof-of-concept** for educational purposes. Do not use in production without implementing authentication, rate limiting, audit logging, and other security controls detailed in [`docs/SECURITY.md`](docs/SECURITY.md).
-
----
 
 ---
 
