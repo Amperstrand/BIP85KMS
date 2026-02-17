@@ -1,8 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { deriveDeterministicAgeKey, deriveMasterKey } from '../src/bip85kms';
+import { bech32 } from 'bech32';
+import { hmac } from '@noble/hashes/hmac';
+import { sha256 } from '@noble/hashes/sha256';
+import {
+	bufferToHex,
+	deriveBIP85Entropy,
+	deriveDeterministicAgeKey,
+	deriveFromMnemonic,
+	deriveMasterKey,
+	deriveMasterNodeFromMnemonic,
+} from '../src/bip85kms';
 
 const testPassphrase = 'example-passphrase-do-not-use!';
 const testMasterKey = deriveMasterKey(testPassphrase);
+const TEST_MNEMONIC =
+	'bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon';
 
 describe('Deterministic Age Key Generation', () => {
 	it('generates a deterministic key for index 0', () => {
@@ -27,5 +39,56 @@ describe('Deterministic Age Key Generation', () => {
 		expect(deriveDeterministicAgeKey(testMasterKey, 4)).toBe(
 			'AGE-SECRET-KEY-1FMPVFDE9WD8CSTNS4J3QRNQ5VRTFE8973FVJ2JANT56HEPZTKA4SQZZ84R',
 		);
+	});
+
+	it('produces age private key and public key in expected format for deriveFromMnemonic', () => {
+		const result = deriveFromMnemonic(TEST_MNEMONIC, 1, 'testapp', 'test.txt');
+		expect(result.age_private_key).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
+		expect(result.age_public_key).toMatch(/^age1[a-z0-9]{58}$/);
+		expect(result.iv).toHaveLength(24);
+	});
+
+	it('uses the expected HMAC-SHA256 bytes for key derivation', () => {
+		const entropy = new Uint8Array(32).fill(0x42);
+		const index = 0;
+		const ageKey = deriveDeterministicAgeKey(entropy, index);
+		const decoded = new Uint8Array(bech32.fromWords(bech32.decode(ageKey.toLowerCase()).words));
+
+		const indexBytes = new Uint8Array(8);
+		new DataView(indexBytes.buffer).setBigUint64(0, BigInt(index), false);
+		const expected = hmac(sha256, entropy, indexBytes);
+		expect(bufferToHex(decoded)).toBe(bufferToHex(expected));
+	});
+
+	it('changes output for different mnemonic, keyVersion, and filename/iv', () => {
+		const base = deriveFromMnemonic(TEST_MNEMONIC, 1, 'testapp', 'test.txt');
+		const differentMnemonic = deriveFromMnemonic(
+			'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+			1,
+			'testapp',
+			'test.txt',
+		);
+		const differentKeyVersion = deriveFromMnemonic(TEST_MNEMONIC, 2, 'testapp', 'test.txt');
+		const differentFilename = deriveFromMnemonic(TEST_MNEMONIC, 1, 'testapp', 'test-2.txt');
+
+		expect(base.age_private_key).not.toBe(differentMnemonic.age_private_key);
+		expect(base.age_private_key).not.toBe(differentKeyVersion.age_private_key);
+		expect(base.iv).not.toBe(differentFilename.iv);
+	});
+
+	it('derives deterministic BIP85 entropy for a known mnemonic/index', () => {
+		const entropy = deriveBIP85Entropy(1, deriveMasterNodeFromMnemonic(TEST_MNEMONIC));
+		expect(bufferToHex(entropy)).toBe('d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81');
+	});
+
+	it('handles edge cases for invalid mnemonic, index bounds, and unicode inputs', () => {
+		expect(() => deriveFromMnemonic('not a valid mnemonic', 1, 'testapp', 'test.txt')).toThrow();
+		expect(deriveDeterministicAgeKey(testMasterKey, 0)).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
+		expect(deriveDeterministicAgeKey(testMasterKey, 0x7fffffff)).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
+
+		const unicodeA = deriveFromMnemonic(TEST_MNEMONIC, 1, '应用', '📄.txt');
+		const unicodeB = deriveFromMnemonic(TEST_MNEMONIC, 1, '应用', '📄.txt');
+		expect(unicodeA.age_private_key).toBe(unicodeB.age_private_key);
+		expect(unicodeA.iv).toMatch(/^[0-9a-f]{24}$/);
 	});
 });
