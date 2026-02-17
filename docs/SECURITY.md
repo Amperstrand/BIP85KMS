@@ -212,8 +212,8 @@ IV reuse with the same key breaks AES-GCM security. Since same filename = same I
 
 | Scenario | Risk | Mitigation |
 |----------|------|------------|
-| Same file, re-encrypted | Low | Same ciphertext (acceptable) |
-| Different content, same filename | Medium | Increment `keyVersion` |
+| Same file content, re-encrypted with same keyVersion | Low | Same ciphertext (acceptable for unchanged content) |
+| Different content, same filename with same keyVersion | Medium | Increment `keyVersion` to get new key |
 
 **Recommendation**: Use Age encryption for all file encryption. Age correctly handles nonce generation internally.
 

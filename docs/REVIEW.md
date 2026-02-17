@@ -163,8 +163,8 @@ const entropy = sha256(child.privateKey);
 ### Previous Issue
 
 The project previously had two different IV derivation methods:
-- Worker: filename-based (`sha256(filename)[:12]`)
-- OpenSSL script: content-based (`sha256(file_content)[:16]`)
+- Worker: filename-based (`sha256(filename)` → first 12 bytes = 24 hex characters)
+- OpenSSL script: content-based (`sha256(file_content)` → first 16 bytes = 32 hex characters)
 
 ### Resolution
 
@@ -177,7 +177,7 @@ Content-based IV was incorrect because it:
 
 ### Current Implementation
 
-All components now use: `iv = sha256(filename)[:12]`
+All components now use: `iv = sha256(filename)` → first 12 bytes (24 hex characters)
 
 | Component | IV Source | Status |
 |-----------|-----------|--------|
