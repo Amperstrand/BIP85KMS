@@ -13,8 +13,7 @@ import {
 
 const testPassphrase = 'example-passphrase-do-not-use!';
 const testMasterKey = deriveMasterKey(testPassphrase);
-const TEST_MNEMONIC =
-	'bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon';
+const TEST_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 describe('Deterministic Age Key Generation', () => {
 	it('generates a deterministic key for index 0', () => {
@@ -63,7 +62,7 @@ describe('Deterministic Age Key Generation', () => {
 	it('changes output for different mnemonic, keyVersion, and filename/iv', () => {
 		const base = deriveFromMnemonic(TEST_MNEMONIC, 1, 'testapp', 'test.txt');
 		const differentMnemonic = deriveFromMnemonic(
-			'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+			'legal winner thank year wave sausage worth useful legal winner thank yellow',
 			1,
 			'testapp',
 			'test.txt',
@@ -78,14 +77,22 @@ describe('Deterministic Age Key Generation', () => {
 
 	it('derives deterministic BIP85 entropy for a known mnemonic/index', () => {
 		const entropy = deriveBIP85Entropy(1, deriveMasterNodeFromMnemonic(TEST_MNEMONIC));
-		expect(bufferToHex(entropy)).toBe('d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81');
+		expect(bufferToHex(entropy)).toBe('423c2ee380f4f3e36abf538d90a34c6d993a80786de3293f62f0cd4bd7d1e769');
 	});
 
-	it('handles edge cases for invalid mnemonic, index bounds, and unicode inputs', () => {
+	it('throws for invalid mnemonic input', () => {
 		expect(() => deriveFromMnemonic('not a valid mnemonic', 1, 'testapp', 'test.txt')).toThrow();
-		expect(deriveDeterministicAgeKey(testMasterKey, 0)).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
-		expect(deriveDeterministicAgeKey(testMasterKey, 0x7fffffff)).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
+	});
 
+	it('handles boundary indexes for deterministic age key derivation', () => {
+		const key0 = deriveDeterministicAgeKey(testMasterKey, 0);
+		const keyMax = deriveDeterministicAgeKey(testMasterKey, 0x7fffffff);
+		expect(key0).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
+		expect(keyMax).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]{58}$/);
+		expect(key0).not.toBe(keyMax);
+	});
+
+	it('supports unicode app and file identifiers deterministically', () => {
 		const unicodeA = deriveFromMnemonic(TEST_MNEMONIC, 1, '应用', '📄.txt');
 		const unicodeB = deriveFromMnemonic(TEST_MNEMONIC, 1, '应用', '📄.txt');
 		expect(unicodeA.age_private_key).toBe(unicodeB.age_private_key);
