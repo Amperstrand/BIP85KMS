@@ -167,6 +167,35 @@ Returned when request parsing or key derivation fails.
 
 ---
 
+## IV (Initialization Vector) Derivation
+
+The IV is derived deterministically from the filename:
+
+```
+iv = sha256(filename)[:12]  # 96 bits, hex-encoded (24 characters)
+```
+
+**This is consistent with BIP85KMS's core design**: all cryptographic material is derivable from the filename alone, without needing the file content.
+
+### Why Filename-Based IV?
+
+1. **Pre-allocation**: Derive IV before file exists
+2. **Consistency**: Same filename always produces same IV
+3. **Decoupling**: Encryption parameters independent of file content
+
+### AES-GCM / Symmetric Encryption Warning
+
+For AES-GCM and other AEAD ciphers, IV reuse with the same key is catastrophic. Since filename-based IV produces the same IV for the same filename:
+
+- **Same file content + same keyVersion**: Safe (same ciphertext is acceptable)
+- **Different file content + same keyVersion**: Use a different `keyVersion` for each unique content version
+
+**Best Practice**: When re-encrypting a file that has changed, increment `keyVersion` to get a new key and avoid any IV reuse concerns.
+
+**Recommended**: Use Age encryption instead of raw AES. Age handles nonces internally and correctly.
+
+---
+
 ## Usage Examples
 
 ### Example 1: Encrypt a File (Public Key Only)
