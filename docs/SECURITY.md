@@ -194,13 +194,30 @@ await new Promise(resolve => setTimeout(resolve, 100));
 
 ---
 
-#### Scenario 4: Deterministic IV Vulnerabilities
+#### Scenario 4: Deterministic IV Design Decision
 
-**Attack**: Exploit the deterministic IV generation from filename hash
+**Context**: BIP85KMS uses filename-based IV derivation
 
-**Impact**: **MEDIUM** - Information leakage in specific scenarios
+**IV Derivation**: `sha256(filename)[:12]`
 
-**Vulnerability Details**:
+**This is intentional and correct** for the following reasons:
+
+1. **Consistency with core model**: All derived material comes from filename
+2. **Pre-allocation support**: IV can be derived before file exists
+3. **Age compatibility**: Age encryption (primary use case) handles nonces internally, so this IV is auxiliary
+
+**For AES-GCM users:**
+
+IV reuse with the same key breaks AES-GCM security. Since same filename = same IV:
+
+| Scenario | Risk | Mitigation |
+|----------|------|------------|
+| Same file, re-encrypted | Low | Same ciphertext (acceptable) |
+| Different content, same filename | Medium | Increment `keyVersion` |
+
+**Recommendation**: Use Age encryption for all file encryption. Age correctly handles nonce generation internally.
+
+**Security Implications**:
 
 The current implementation uses:
 ```javascript
@@ -212,7 +229,12 @@ This means:
 - IV is not a secret (derived from known filename)
 - Pattern analysis could reveal which ciphertexts correspond to same files
 
-**Implications**:
+**When Deterministic IVs Are Acceptable**:
+- File content changes between encryptions (different data each time)
+- Content-addressable encryption (deterministic by design)
+- Use with stream ciphers where IV uniqueness is not critical (with proper key rotation)
+
+**Important Notes**:
 
 1. **Identical Plaintext Detection**: If the same file content is encrypted multiple times with the same key and IV, the ciphertexts will be identical, revealing that the same data was encrypted.
 
@@ -220,7 +242,7 @@ This means:
 
 3. **Not Recommended for AES-GCM**: Modern AEAD schemes like AES-GCM require unique IVs for each encryption with the same key. Reusing IVs catastrophically breaks security.
 
-**Mitigation**:
+**Mitigation Strategies**:
 
 For Age encryption: Age handles nonce generation internally, the `iv` field is for auxiliary use.
 
@@ -228,11 +250,7 @@ For symmetric encryption (AES, ChaCha20):
 - **Option 1**: Include a random component in the filename (e.g., `file-{uuid}.txt`)
 - **Option 2**: Append a counter or timestamp to ensure unique IVs
 - **Option 3**: Use a different IV derivation: `SHA-256(filename || keyVersion || timestamp)`
-
-**When Deterministic IVs Are Acceptable**:
-- File content changes between encryptions (different data each time)
-- Content-addressable encryption (deterministic by design)
-- Use with stream ciphers where IV uniqueness is not critical (with proper key rotation)
+- **Option 4**: Increment `keyVersion` when content changes to get a new key
 
 ---
 

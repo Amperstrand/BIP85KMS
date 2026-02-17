@@ -158,58 +158,59 @@ const entropy = sha256(child.privateKey);
 
 ---
 
-## 3. IV Derivation Analysis
+## 3. IV Derivation Analysis (RESOLVED)
 
-### Current Approaches
+### Previous Issue
 
-The project has **two different IV derivation methods**:
+The project previously had two different IV derivation methods:
+- Worker: filename-based (`sha256(filename)[:12]`)
+- OpenSSL script: content-based (`sha256(file_content)[:16]`)
 
-**Worker/Core (deterministic filename hash)**:
-```javascript
-iv: bufferToHex(filenameHash.slice(0, 12))  // 96-bit IV from SHA-256(filename)
-```
+### Resolution
 
-**OpenSSL Script (content hash)**:
-```bash
-# IV derived from content SHA-256
-SHA256=$(sha256sum "$file" | awk '{print $1}')
-IV="${SHA256:0:32}"  # First 32 hex chars (128 bits)
-```
+**Standardized on filename-based IV** for consistency with BIP85KMS's core design principle.
 
-### Issue: Inconsistent Approaches
+Content-based IV was incorrect because it:
+1. Created circular dependency (need content to encrypt content)
+2. Required embedding content hash in filenames
+3. Violated the "derive from filename alone" model
 
-**Problem**: Different derivation methods could cause confusion.
+### Current Implementation
 
-**Analysis**:
+All components now use: `iv = sha256(filename)[:12]`
 
-| Approach | Pros | Cons | Use Case |
+| Component | IV Source | Status |
+|-----------|-----------|--------|
+| Worker API | filename (SHA-256 hash) | ✅ Correct |
+| OpenSSL script | filename (from API) | ✅ Fixed |
+| Age encryption | N/A (Age handles nonces) | ✅ N/A |
+
+**Analysis**: Filename-based IV is consistent with BIP85KMS's core design:
+
+| Approach | Pros | Cons | Best For |
 |----------|------|------|----------|
-| Filename Hash (Worker) | Deterministic, no plaintext needed | Same IV for same filename (even if content differs) | Age encryption (Age handles nonces internally) |
-| Content Hash (Script) | Ties IV to specific content version | Needs plaintext to derive IV | OpenSSL symmetric encryption |
+| Filename Hash (Current) | Deterministic, no plaintext needed, consistent with BIP85KMS design | Same IV for same filename (even if content differs) | Age encryption (Age handles nonces internally) |
 
-**Verdict**: Both approaches have valid use cases, but **should be clearly documented**.
+**Security Considerations**:
 
-### Recommendations
-
-1. **For Age Encryption** (primary use case):
+1. **For Age encryption (primary use case)**:
    - Current filename-based IV is **acceptable**
    - Age handles nonces internally, the IV is auxiliary
-   - Document that Age manages encryption security
 
-2. **For Symmetric Encryption** (OpenSSL, AES-GCM):
+2. **For symmetric encryption (OpenSSL, AES-GCM)**:
    - **CRITICAL**: Never reuse IV with same key
-   - Content-based IV is better (changes when content changes)
-   - Consider adding random component or counter
+   - Filename-based IV produces same IV for same filename
+   - **BEST PRACTICE**: Increment `keyVersion` when content changes
    - **NOT recommended for AES-GCM** (IV reuse catastrophic)
 
 3. **Documentation**:
-   - Clearly explain both approaches in docs
-   - Warn about IV reuse risks for symmetric ciphers
-   - Recommend Age for general use (handles nonces correctly)
+   - Clearly explain the approach in docs ✅
+   - Warn about IV reuse risks for symmetric ciphers ✅
+   - Recommend Age for general use (handles nonces correctly) ✅
 
-**Priority**: MEDIUM (education/documentation issue)  
-**Effort**: Documentation updates only  
-**Breaking Change**: No
+**Priority**: RESOLVED  
+**Effort**: Script and documentation updates completed  
+**Breaking Change**: No (improves consistency)
 
 ---
 
