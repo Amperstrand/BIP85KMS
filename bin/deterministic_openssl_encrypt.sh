@@ -6,24 +6,30 @@ set -e
 #
 # Overview:
 #   - Encryption:
-#       * Computes the SHA-256 hash of the input file.
-#       * Uses the first 32 hex digits (16 bytes) of that hash as the IV.
-#       * Stores the full hash as part of the encrypted filename:
+#       * Fetches the symmetric key and IV from a remote key server using the
+#         original filename as the identifier.
+#       * The IV is derived deterministically from SHA-256(filename) on the server.
+#       * Computes the SHA-256 hash of the input file for integrity verification.
+#       * Stores the content hash as part of the encrypted filename:
 #             original_filename.<sha256sum>.enc
-#       * Fetches the symmetric key from a remote key server using the original
-#         filename as the identifier.
 #       * Uses OpenSSL's AES-256-CBC with -nosalt for deterministic encryption.
 #
 #   - Decryption:
 #       * Expects the input filename to be in the format:
 #             original_filename.<sha256sum>.enc
-#       * Extracts the SHA-256 hash from the filename and uses its first 32 hex
-#         digits as the IV.
-#       * Fetches the symmetric key from the key server using the base filename.
+#       * Fetches the symmetric key and IV from the key server using the base filename.
+#       * The IV is derived deterministically from SHA-256(filename) on the server.
 #       * Decrypts the file to recover the original plaintext (output filename is
 #         the original filename).
 #       * Computes the SHA-256 hash of the decrypted file and compares it to the
-#         embedded hash. The result is logged as part of the final output.
+#         embedded hash for integrity verification.
+#
+# IV Derivation:
+#   The IV is derived from the filename (not file content) by the key server:
+#       iv = sha256(filename)[:12]  # 96 bits (24 hex characters)
+#   
+#   This ensures consistency with BIP85KMS's core design principle: all 
+#   cryptographic material is derivable from the filename alone.
 #
 # Requirements:
 #   - OpenSSL, curl, jq, and sha256sum must be installed.
@@ -62,20 +68,25 @@ OPERATIONS:
   1) Encrypt:
        Provide a file WITHOUT the ".enc" extension.
        The script will:
-         - Compute the SHA-256 hash of the file.
-         - Use the first 32 hex digits of the hash as the IV.
-         - Fetch the symmetric key from the remote server.
+         - Fetch the symmetric key and IV from the remote server (using the filename).
+         - The IV is derived from SHA-256(filename) on the server.
+         - Compute the SHA-256 hash of the file for integrity.
          - Encrypt the file using AES-256-CBC with -nosalt.
          - Save the output as: <file>.<sha256sum>.enc
 
   2) Decrypt:
        Provide a file with the format: <file>.<sha256sum>.enc
        The script will:
-         - Extract the SHA-256 hash from the filename.
-         - Use the first 32 hex digits as the IV.
-         - Fetch the symmetric key from the remote server (using the base filename).
+         - Extract the content SHA-256 hash from the filename.
+         - Fetch the symmetric key and IV from the remote server (using the base filename).
+         - The IV is derived from SHA-256(filename) on the server.
          - Decrypt the file, outputting the original <file>.
          - Compute and verify the SHA-256 hash of the decrypted file.
+
+NOTE:
+  The IV is derived from the filename (not file content) to maintain consistency
+  with BIP85KMS's core design principle: all cryptographic material is derivable
+  from the filename alone, without needing the file content.
 EOF
 }
 
@@ -158,11 +169,11 @@ cleanup() {
 trap cleanup EXIT
 
 ###############################################################################
-# Fetch Key from Remote Server
+# Fetch Key and IV from Remote Server
 ###############################################################################
-fetch_key() {
+fetch_key_and_iv() {
   local payload="{\"filename\":\"$BASE_FILE\",\"keyVersion\":$KEY_VERSION,\"appId\":\"$APP_ID\",\"getPrivateKey\":true}"
-  debug "Fetching key from server with payload: $payload"
+  debug "Fetching key and IV from server with payload: $payload"
   KEY_JSON=$(curl -s -X POST "$KEY_SERVER" \
     -H "Content-Type: application/json" \
     -d "$payload")
@@ -174,8 +185,16 @@ fetch_key() {
     exit 1
   fi
 
+  IV_FROM_API=$(echo "$KEY_JSON" | jq -r '.iv')
+  if [ -z "$IV_FROM_API" ] || [ "$IV_FROM_API" == "null" ]; then
+    echo "❌ iv not found in the server response."
+    exit 1
+  fi
+
   # Write the symmetric key to temporary file.
   echo "$RAW_ENTROPY" > "$KEY_FILE"
+  
+  debug "Fetched IV from API: $IV_FROM_API"
 }
 
 ###############################################################################
@@ -184,21 +203,25 @@ fetch_key() {
 encrypt_file() {
   debug "Encrypting file: $INPUT_FILE"
 
-  # Compute SHA256 hash of the input file (full 64 hex characters)
+  # Fetch symmetric key and IV from server using the base filename
+  fetch_key_and_iv
+  KEY_HEX=$(cat "$KEY_FILE")
+  debug "Using key: $KEY_HEX"
+  
+  # Convert IV from 24 hex chars (96 bits) to 32 hex chars (128 bits) for OpenSSL
+  # OpenSSL AES-256-CBC expects 128-bit (16 byte) IV
+  # The API returns 96-bit IV, so we pad with zeros
+  IV_HEX="${IV_FROM_API}0000000000000000"
+  IV_HEX="${IV_HEX:0:32}"
+  debug "Using IV (padded to 128 bits): $IV_HEX"
+
+  # Compute SHA256 hash of the input file for integrity verification
   SHA256_FULL=$(sha256sum "$INPUT_FILE" | awk '{print $1}')
-  debug "Computed SHA256: $SHA256_FULL"
-  # Use the first 32 hex digits (16 bytes) as the IV
-  IV_HEX="${SHA256_FULL:0:32}"
-  debug "Derived IV (first 32 hex digits): $IV_HEX"
+  debug "Computed content SHA256: $SHA256_FULL"
 
   # Construct output filename: basefilename.<sha256>.enc
   OUTPUT_FILE="${INPUT_FILE}.${SHA256_FULL}.enc"
   debug "Output file will be: $OUTPUT_FILE"
-
-  # Fetch symmetric key from server using the base filename
-  fetch_key
-  KEY_HEX=$(cat "$KEY_FILE")
-  debug "Using key: $KEY_HEX"
 
   # Encrypt using OpenSSL AES-256-CBC, no salt for determinism.
   openssl enc -aes-256-cbc -K "$KEY_HEX" -iv "$IV_HEX" -nosalt -in "$INPUT_FILE" -out "$OUTPUT_FILE"
@@ -212,14 +235,17 @@ decrypt_file() {
   debug "Decrypting file: $INPUT_FILE"
   # SHA256_HASH and BASE_FILE were parsed above.
 
-  # Derive IV from the SHA256_HASH (first 32 hex digits)
-  IV_HEX="${SHA256_HASH:0:32}"
-  debug "Using IV (derived from filename): $IV_HEX"
-
-  # Fetch symmetric key from server using the base filename
-  fetch_key
+  # Fetch symmetric key and IV from server using the base filename
+  fetch_key_and_iv
   KEY_HEX=$(cat "$KEY_FILE")
   debug "Using key: $KEY_HEX"
+
+  # Convert IV from 24 hex chars (96 bits) to 32 hex chars (128 bits) for OpenSSL
+  # OpenSSL AES-256-CBC expects 128-bit (16 byte) IV
+  # The API returns 96-bit IV, so we pad with zeros
+  IV_HEX="${IV_FROM_API}0000000000000000"
+  IV_HEX="${IV_HEX:0:32}"
+  debug "Using IV (padded to 128 bits): $IV_HEX"
 
   # Output file will be the base filename (original file)
   OUTPUT_FILE="$BASE_FILE"
