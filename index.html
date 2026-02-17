@@ -4,18 +4,111 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BIP85KMS Client-side Demo</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ctext y='34' font-size='30'%3E%F0%9F%94%90%3C/text%3E%3C/svg%3E" />
     <style>
-      body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 900px; padding: 0 1rem; }
-      form { display: grid; gap: .75rem; }
-      input, textarea, button { padding: .6rem; font: inherit; }
-      textarea { min-height: 150px; font-family: monospace; font-size: 0.9em; }
-      .warn { background: #fff7e6; border: 1px solid #ffd591; padding: .75rem; border-radius: 6px; margin-bottom: 1rem; }
-      .info { background: #e6f7ff; border: 1px solid #91d5ff; padding: .75rem; border-radius: 6px; margin-bottom: 1rem; }
-      pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow:auto; font-size: 0.9em; }
-      .help-text { font-size: 0.9em; color: #656d76; margin-top: 0.25rem; }
-      .button-row { display: flex; gap: 0.5rem; }
-      button { flex: 1; }
-      button.secondary { background: #f6f8fa; border: 1px solid #d0d7de; }
+      :root {
+        color-scheme: light dark;
+        --primary: #2563eb;
+        --primary-dark: #1d4ed8;
+        --success: #16a34a;
+        --warning: #d97706;
+        --error: #dc2626;
+        --bg: #f8fafc;
+        --bg-secondary: #ffffff;
+        --fg: #1e293b;
+        --fg-muted: #64748b;
+        --border: #e2e8f0;
+        --code-bg: #f1f5f9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f172a;
+          --bg-secondary: #111827;
+          --fg: #e2e8f0;
+          --fg-muted: #94a3b8;
+          --border: #334155;
+          --code-bg: #1e293b;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: Inter, "DM Sans", system-ui, -apple-system, sans-serif;
+        line-height: 1.5;
+      }
+      main { max-width: 960px; margin: 2rem auto; padding: 0 1rem 2rem; }
+      .app-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 14px; padding: 1.25rem; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+      .app-header h1 { margin: 0 0 .25rem; font-size: clamp(1.4rem, 2vw, 1.8rem); }
+      .app-header p { margin: 0; color: var(--fg-muted); }
+      .section { margin-top: 1rem; border: 1px solid var(--border); border-radius: 10px; padding: .9rem; background: var(--bg-secondary); }
+      .section h2 { margin: 0 0 .45rem; font-size: 1rem; }
+      .warn { background: color-mix(in srgb, var(--warning) 12%, transparent); border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); }
+      .info { background: color-mix(in srgb, var(--primary) 10%, transparent); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+      label { display: block; font-weight: 600; margin-bottom: .35rem; }
+      .help-text { color: var(--fg-muted); font-size: .9rem; margin-top: .35rem; }
+      textarea, button, input[type="checkbox"] { font: inherit; }
+      textarea {
+        width: 100%;
+        min-height: 130px;
+        resize: vertical;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: .7rem .8rem;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: .9rem;
+      }
+      textarea:focus-visible, button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+      .field-status { display: inline-block; margin-top: .4rem; font-size: .85rem; color: var(--fg-muted); }
+      .field-status.valid { color: var(--success); }
+      .field-status.invalid { color: var(--error); }
+      .button-row { display: flex; gap: .6rem; flex-wrap: wrap; }
+      button {
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: .6rem .8rem;
+        cursor: pointer;
+        transition: .15s ease;
+      }
+      button:hover { transform: translateY(-1px); }
+      button.primary { background: var(--primary); color: #fff; }
+      button.primary:hover { background: var(--primary-dark); }
+      button.secondary { background: var(--bg); border-color: var(--border); color: var(--fg); }
+      .derive-btn { width: 100%; justify-content: center; display: inline-flex; align-items: center; gap: .5rem; }
+      .btn-loading { display: none; align-items: center; gap: .5rem; }
+      .loading .btn-text { display: none; }
+      .loading .btn-loading { display: inline-flex; }
+      .spinner { width: 14px; height: 14px; border: 2px solid #ffffff66; border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .option-row { display: flex; align-items: center; gap: .55rem; font-weight: 500; }
+      .error-box { margin-top: 1rem; border: 1px solid color-mix(in srgb, var(--error) 60%, var(--border)); background: color-mix(in srgb, var(--error) 12%, transparent); color: var(--error); border-radius: 10px; padding: .75rem .85rem; }
+      .hidden { display: none; }
+      .result-container { margin-top: 1rem; border: 1px solid var(--border); border-radius: 12px; padding: 1rem; background: var(--bg-secondary); }
+      .result-header { display: flex; justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap; }
+      .result-header h3 { margin: 0; }
+      .result-section { margin-top: .75rem; border-top: 1px solid var(--border); padding-top: .75rem; }
+      .result-section h4 { margin: 0 0 .3rem; font-size: .9rem; }
+      code, pre { background: var(--code-bg); border-radius: 8px; padding: .15rem .4rem; overflow-wrap: anywhere; }
+      pre { margin: .6rem 0 0; padding: .75rem; overflow: auto; font-size: .85rem; }
+      details summary { cursor: pointer; color: var(--fg-muted); margin-top: .6rem; }
+      .copy-inline { margin-top: .4rem; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+      @media (max-width: 767px) {
+        main { margin-top: 1rem; }
+        .app-card { padding: 1rem; border-radius: 12px; }
+      }
     </style>
     <script type="importmap">
       {
@@ -32,26 +125,45 @@
     </script>
   </head>
   <body>
-    <h1>BIP85KMS — Semantic Path Derivation</h1>
-    <p>Derive Age encryption keys from semantic paths using BIP-Keychain specification.</p>
-    
-    <div class="warn">
-      <strong>Warning:</strong> The mnemonic entered here is sensitive. Use only for local testing and only in trusted environments.
-    </div>
+    <main>
+      <section class="app-card">
+        <header class="app-header">
+          <h1><span aria-hidden="true">🔐 </span>BIP85KMS</h1>
+          <p>Derive Age encryption keys from semantic paths.</p>
+        </header>
 
-    <div class="info">
-      <strong>BIP-Keychain Semantic Paths:</strong> Instead of arbitrary numbers, derivation paths are built from meaningful JSON-LD objects using schema.org vocabulary. Each segment must have an <code>@type</code> property.
-    </div>
+        <section class="section warn">
+          <h2><span aria-hidden="true">⚠️ </span>Security Warning</h2>
+          <div>The mnemonic entered here is sensitive. Use only for local testing and only in trusted environments.</div>
+        </section>
 
-    <form id="derive-form">
-      <label>
-        Mnemonic
-        <textarea id="mnemonic" required placeholder="bacon bacon bacon bacon ..."></textarea>
-      </label>
+        <section class="section info">
+          <h2><span aria-hidden="true">ℹ️ </span>Semantic Paths</h2>
+          <div>Use a JSON array of JSON-LD objects. Each segment must include an <code>@type</code> property.</div>
+        </section>
 
-      <label>
-        Semantic Path (JSON-LD array of objects)
-        <textarea id="semanticPath" required placeholder='[
+        <form id="derive-form">
+          <section class="section">
+            <h2><span aria-hidden="true">📋 </span>Quick Start</h2>
+            <div class="button-row">
+              <button type="button" class="secondary" id="load-demo-btn">Quick Start: Load Demo Data</button>
+              <button type="button" class="secondary" id="example-btn">Load Example Path</button>
+            </div>
+            <div class="help-text">Uses a known demo mnemonic for local testing only.</div>
+          </section>
+
+          <section class="section">
+            <h2><span aria-hidden="true">🔑 </span>Mnemonic</h2>
+            <label for="mnemonic">BIP39 mnemonic</label>
+            <textarea id="mnemonic" required placeholder="bacon bacon bacon bacon ..."></textarea>
+            <div class="help-text">Enter your 12, 15, 18, 21, or 24 word BIP39 mnemonic.</div>
+            <div id="mnemonic-status" class="field-status">Awaiting mnemonic input.</div>
+          </section>
+
+          <section class="section">
+            <h2><span aria-hidden="true">📁 </span>Semantic Path</h2>
+            <label for="semanticPath">JSON-LD path array</label>
+            <textarea id="semanticPath" required placeholder='[
   {
     "@type": "Organization",
     "name": "AcmeCorp"
@@ -65,24 +177,55 @@
     "name": "database.sql"
   }
 ]'></textarea>
-        <div class="help-text">
-          Enter an array of JSON-LD objects with schema.org types. Common types: Organization, SoftwareApplication, DigitalDocument, WebSite, Person.
-        </div>
-      </label>
+            <div class="help-text">JSON array of objects with schema.org <code>@type</code> values.</div>
+            <div id="semantic-status" class="field-status">Awaiting semantic path input.</div>
+          </section>
 
-      <label>
-        <input id="getPrivateKey" type="checkbox" checked /> Include private key material
-      </label>
+          <section class="section">
+            <h2>Options</h2>
+            <label class="option-row"><input id="getPrivateKey" type="checkbox" checked /> Include private key material</label>
+          </section>
 
-      <div class="button-row">
-        <button type="button" class="secondary" id="example-btn">Load Example</button>
-        <button type="submit">Derive Keys</button>
-      </div>
-    </form>
+          <button type="submit" id="derive-btn" class="primary derive-btn">
+            <span class="btn-text">Derive Keys</span>
+            <span class="btn-loading"><span class="spinner"></span> Deriving...</span>
+          </button>
+        </form>
 
-    <h2>Result</h2>
-    <pre id="output">Enter a mnemonic and semantic path, then click "Derive Keys".</pre>
+        <div id="error-box" class="error-box hidden" role="alert"></div>
+        <div id="copy-status" class="sr-only" aria-live="polite"></div>
 
+        <section id="result-container" class="result-container hidden" aria-live="polite">
+          <div class="result-header">
+            <h3><span aria-hidden="true">✅ </span>Derivation Complete</h3>
+            <button type="button" class="secondary copy-btn" data-copy-target="output">Copy JSON</button>
+          </div>
+
+          <div class="result-section">
+            <h4>Derivation Path</h4>
+            <code id="derivation-path">—</code>
+            <div><button type="button" class="secondary copy-btn copy-inline" data-copy-target="derivation-path">Copy Path</button></div>
+          </div>
+
+          <div class="result-section">
+            <h4>Public Key</h4>
+            <code id="public-key">—</code>
+            <div><button type="button" class="secondary copy-btn copy-inline" data-copy-target="public-key">Copy Public Key</button></div>
+          </div>
+
+          <div id="private-key-section" class="result-section">
+            <h4><span aria-hidden="true">⚠️ </span>Private Key (Handle with Care)</h4>
+            <code id="private-key">—</code>
+            <div><button type="button" class="secondary copy-btn copy-inline" data-copy-target="private-key">Copy Private Key</button></div>
+          </div>
+
+          <details>
+            <summary>View Full JSON Output</summary>
+            <pre id="output">Enter a mnemonic and semantic path, then click "Derive Keys".</pre>
+          </details>
+        </section>
+      </section>
+    </main>
     <script type="module" src="./web/app.js"></script>
   </body>
 </html>
