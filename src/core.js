@@ -476,7 +476,10 @@ export function semanticToIndex(segment, parentEntropy, hardened = true) {
   // Step 1: Canonicalize JSON
   const canonical = jcs(segment);
   
-  // Step 2: Compute HMAC-SHA-256 (using SHA-256, not SHA-512 as libraries available)
+  // Step 2: Compute HMAC-SHA-256
+  // Note: BIP-Keychain specification suggests HMAC-SHA-512, but we use HMAC-SHA-256
+  // which is sufficient for deriving 31-bit indexes and is available in our libraries.
+  // The security properties remain sound as we only need 31 bits of output.
   const hmacResult = hmac(sha256, parentEntropy, new TextEncoder().encode(canonical));
   
   // Step 3: Extract top 31 bits from the HMAC result
@@ -576,16 +579,20 @@ export function deriveFromSemanticPath(masterNode, semanticPath) {
     if (!childNode.privateKey) {
       throw new Error(`Failed to derive child node at ${currentPath}`);
     }
-    // Use the child's private key as entropy for next iteration
+    // Use the child's private key hash as entropy for next iteration
+    // This ensures entropy chaining through the semantic path
     currentEntropy = sha256(childNode.privateKey);
   }
   
-  // Get the final index (unhardened) for entropy derivation
+  // Use the chained entropy from the final derivation
+  // This entropy incorporates all semantic segments in the path
+  const finalEntropy = currentEntropy;
+  
+  // Extract final index for Age key derivation parameter
   const finalIndexWithHardened = indexes[indexes.length - 1];
   const finalIndex = finalIndexWithHardened & 0x7FFFFFFF; // Remove hardened bit
-  const finalEntropy = deriveBIP85Entropy(finalIndex, masterNode);
   
-  // Derive Age keys from final entropy
+  // Derive Age keys from the chained entropy
   const agePrivateKey = deriveDeterministicAgeKey(finalEntropy, finalIndex);
   
   // Derive Age public key
