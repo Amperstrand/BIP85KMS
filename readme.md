@@ -200,33 +200,42 @@ For detailed architecture documentation, see [`docs/ARCHITECTURE.md`](docs/ARCHI
 
 ### Request Format
 
+The API uses **BIP-Keychain semantic paths** - JSON-LD objects with schema.org vocabulary:
+
 ```json
 {
-  "filename": "document.pdf",    // Required: File identifier
-  "keyVersion": 1,               // Required: Key rotation version (0-2147483647)
-  "appId": "myapp",              // Required: Application identifier
-  "getPrivateKey": false         // Optional: Return private key? (default: false)
+  "semanticPath": [
+    {"@type": "Organization", "name": "AcmeCorp"},
+    {"@type": "DigitalDocument", "name": "report.pdf"}
+  ],
+  "getPrivateKey": false
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `semanticPath` | array | Yes | Array of JSON-LD objects. Each must have `@type`. |
+| `getPrivateKey` | boolean | No | Return private key? Default: `false` |
 
 ### Response Format
 
-**Public Mode** (getPrivateKey: false or omitted):
+**Public Mode** (`getPrivateKey: false` or omitted):
 ```json
 {
   "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjl...",
-  "iv": "b335630551682c19a781afeb"
+  "derivationPath": "m/83696968'/67797668'/923847291'/1837461928'",
+  "semanticPath": [{"@type": "Organization", "name": "AcmeCorp"}, {"@type": "DigitalDocument", "name": "report.pdf"}]
 }
 ```
 
-**Private Mode** (getPrivateKey: true):
+**Private Mode** (`getPrivateKey: true`):
 ```json
 {
-  "derivationPath": "m/83696968'/128169'/1'/1186212674'/859136773'",
+  "derivationPath": "m/83696968'/67797668'/923847291'/1837461928'",
   "age_private_key": "AGE-SECRET-KEY-1M4XE5PZGVMPX0D923NHT6HRXT7VEZ...",
   "age_public_key": "age15vzcvrduzysjsns520xkrd9les2nxjl...",
   "raw_entropy": "d81b4fb9db6d620a5d8b26b24ee4423f74bf1a555137d2e0c6eec2ef088ddd81",
-  "iv": "b335630551682c19a781afeb"
+  "semanticPath": [{"@type": "Organization", "name": "AcmeCorp"}, {"@type": "DigitalDocument", "name": "report.pdf"}]
 }
 ```
 
@@ -236,14 +245,25 @@ For detailed architecture documentation, see [`docs/ARCHITECTURE.md`](docs/ARCHI
 ```bash
 curl -X POST https://your-worker.dev \
   -H "Content-Type: application/json" \
-  -d '{"filename":"README.md", "keyVersion":1, "appId":"docs"}'
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "AcmeCorp"},
+      {"@type": "DigitalDocument", "name": "report.pdf"}
+    ]
+  }'
 ```
 
 **Get private key for decryption** (⚠️ use carefully):
 ```bash
 curl -X POST https://your-worker.dev \
   -H "Content-Type: application/json" \
-  -d '{"filename":"README.md", "keyVersion":1, "appId":"docs", "getPrivateKey":true}'
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "AcmeCorp"},
+      {"@type": "DigitalDocument", "name": "report.pdf"}
+    ],
+    "getPrivateKey": true
+  }'
 ```
 
 For complete API documentation including error responses, authentication recommendations, and integration examples, see [`docs/API.md`](docs/API.md).
@@ -272,14 +292,14 @@ npm install
 npm test
 ```
 
-You should see all 9 tests pass:
+You should see all 44 tests pass:
 ```
-✓ test/index.spec.ts (5 tests)
-✓ test/deterministic_age.test.ts (4 tests)
+✓ test/index.spec.ts (8 tests)
+✓ test/semantic_paths.test.ts (25 tests)
+✓ test/deterministic_age.test.ts (11 tests)
 ```
 
 ### 3. Local Development
-
 ```bash
 # Start local dev server
 npm run dev
@@ -287,7 +307,12 @@ npm run dev
 # In another terminal, test the endpoint
 curl -X POST http://localhost:8787 \
   -H "Content-Type: application/json" \
-  -d '{"filename":"test.txt", "keyVersion":1, "appId":"dev"}'
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "dev"},
+      {"@type": "DigitalDocument", "name": "test.txt"}
+    ]
+  }'
 ```
 
 ### 4. Deploy to Cloudflare Workers
@@ -300,9 +325,25 @@ echo "your twenty four word mnemonic phrase goes here..." | wrangler secret put 
 # Deploy the Worker
 npx wrangler deploy
 
+# Test your deployed worker
+curl -X POST https://your-worker.workers.dev \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "test"},
+      {"@type": "DigitalDocument", "name": "test.txt"}
+    ]
+  }'
+
 # Optional: Configure custom routes
-npx wrangler deploy --routes https://keys.example.com/*
+# npx wrangler deploy --routes https://keys.example.com/*
 ```
+
+**⚠️ Security Reminders:**
+- Never use the demo mnemonic for real data
+- Always host your own instance
+- Implement authentication before production use
+- See [docs/SECURITY.md](docs/SECURITY.md) for full security guidelines
 
 ### 5. Try the Browser Demo
 
@@ -341,7 +382,12 @@ Age (https://age-encryption.org/) is a modern, simple file encryption tool. BIP8
 # 1. Get public key from API
 PUBLIC_KEY=$(curl -s -X POST https://your-worker.dev \
   -H "Content-Type: application/json" \
-  -d '{"filename":"secret.txt","keyVersion":1,"appId":"backup"}' \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "myorg"},
+      {"@type": "DigitalDocument", "name": "secret.txt"}
+    ]
+  }' \
   | jq -r '.age_public_key')
 
 # 2. Encrypt with Age
@@ -352,10 +398,16 @@ rm recipient.txt
 
 **Decrypt the file**:
 ```bash
-# 1. Get private key from API (same parameters!)
+# 1. Get private key from API (same semantic path!)
 PRIVATE_KEY=$(curl -s -X POST https://your-worker.dev \
   -H "Content-Type: application/json" \
-  -d '{"filename":"secret.txt","keyVersion":1,"appId":"backup","getPrivateKey":true}' \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "myorg"},
+      {"@type": "DigitalDocument", "name": "secret.txt"}
+    ],
+    "getPrivateKey": true
+  }' \
   | jq -r '.age_private_key')
 
 # 2. Decrypt with Age
@@ -390,7 +442,9 @@ cd bin
 # Shows complete encrypt → decrypt cycle with debug output
 ```
 
-### Using the Node.js CLI
+### Using the Node.js CLI (Legacy)
+
+> ⚠️ **Note**: The CLI uses the legacy `filename/keyVersion/appId` API. For new projects, prefer using the HTTP API with semantic paths or the browser demo.
 
 ```bash
 # Build the CLI
@@ -399,7 +453,7 @@ npm run build
 # Set your mnemonic
 export MNEMONIC_SECRET="your mnemonic phrase here..."
 
-# Derive keys
+# Derive keys (legacy format)
 node dist/cli.js \
   --filename "data.json" \
   --keyVersion 1 \
@@ -414,6 +468,25 @@ node dist/cli.js \
 #   "raw_entropy": "...",
 #   "iv": "..."
 # }
+```
+
+### Using the Python CLI (Legacy)
+
+> ⚠️ **Note**: The Python CLI uses the legacy `filename/keyVersion/appId` API. For new projects, prefer using the HTTP API with semantic paths.
+
+```bash
+# Install dependencies
+pip install bipsea cryptography
+
+# Set your mnemonic
+export MNEMONIC_SECRET="your mnemonic phrase here..."
+
+# Derive keys (legacy format)
+python3 python/cli.py \
+  --filename "data.json" \
+  --keyVersion 1 \
+  --appId "myapp" \
+  --getPrivateKey
 ```
 
 ### Using the Python CLI
@@ -435,44 +508,62 @@ python3 python/cli.py \
 
 ### Key Rotation Example
 
-To rotate keys for the same file, increment `keyVersion`:
+To rotate keys, modify the semantic path. Add a version property or change any segment:
 
 ```bash
-# Original encryption with version 1
-curl -X POST https://your-worker.dev \
-  -d '{"filename":"data.db", "keyVersion":1, "appId":"backup"}' \
-  | jq -r '.age_public_key' > key_v1.txt
+# Original encryption
+PUBLIC_KEY_V1=$(curl -s -X POST https://your-worker.dev \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "myorg"},
+      {"@type": "DigitalDocument", "name": "data.db", "version": "1"}
+    ]
+  }' \
+  | jq -r '.age_public_key')
 
-age -R key_v1.txt -o data.db.v1.age data.db
+echo "$PUBLIC_KEY_V1" | age -R - -o data.db.v1.age data.db
 
-# Rotate to version 2 (re-encrypt with new key)
-curl -X POST https://your-worker.dev \
-  -d '{"filename":"data.db", "keyVersion":2, "appId":"backup"}' \
-  | jq -r '.age_public_key' > key_v2.txt
+# Rotate by changing version (different keys)
+PUBLIC_KEY_V2=$(curl -s -X POST https://your-worker.dev \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "myorg"},
+      {"@type": "DigitalDocument", "name": "data.db", "version": "2"}
+    ]
+  }' \
+  | jq -r '.age_public_key')
 
-age -R key_v2.txt -o data.db.v2.age data.db
+echo "$PUBLIC_KEY_V2" | age -R - -o data.db.v2.age data.db
 
-# Old encrypted file (v1) and new encrypted file (v2) exist
-# Both can be decrypted using their respective keyVersion
+# Both encrypted files exist with different keys
+# Decrypt each with its respective semantic path
 ```
 
 ### Integration Example: Backup Script
 
 ```bash
 #!/bin/bash
-# backup.sh - Encrypt backups with deterministic keys
+# backup.sh - Encrypt backups with deterministic keys using semantic paths
 
 WORKER_URL="https://your-worker.dev"
-APP_ID="daily-backup"
-KEY_VERSION=1
+ORG_NAME="myorg"
+APP_NAME="backup-system"
 
 for file in /data/*.db; do
   filename=$(basename "$file")
   
-  # Get encryption key from BIP85KMS
+  # Get encryption key from BIP85KMS with semantic path
   pubkey=$(curl -s -X POST "$WORKER_URL" \
     -H "Content-Type: application/json" \
-    -d "{\"filename\":\"$filename\",\"keyVersion\":$KEY_VERSION,\"appId\":\"$APP_ID\"}" \
+    -d '{
+      "semanticPath": [
+        {"@type": "Organization", "name": "'"$ORG_NAME'"},
+        {"@type": "SoftwareApplication", "name": "'"$APP_NAME'"},
+        {"@type": "DigitalDocument", "name": "'"$filename'"}
+      ]
+    }' \
     | jq -r '.age_public_key')
   
   # Encrypt and upload

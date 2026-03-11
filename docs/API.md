@@ -423,22 +423,31 @@ Different semantic paths (even with small changes like version numbers) produce 
 
 ### Example 4: Application Isolation
 
-Different applications should use different `appId` values:
+Different applications should use different semantic paths:
 
 ```bash
-# App 1
+# App 1 - backup system
 curl -X POST https://keys.example.com \
   -H "Content-Type: application/json" \
-  -d '{"filename": "config.json", "keyVersion": 1, "appId": "webapp"}'
+  -d '{
+    "semanticPath": [
+      {"@type": "SoftwareApplication", "name": "backup-system"},
+      {"@type": "DigitalDocument", "name": "config.json"}
+    ]
+  }'
 
-# App 2
+# App 2 - mobile app
 curl -X POST https://keys.example.com \
   -H "Content-Type: application/json" \
-  -d '{"filename": "config.json", "keyVersion": 1, "appId": "mobile"}'
+  -d '{
+    "semanticPath": [
+      {"@type": "SoftwareApplication", "name": "mobile-app"},
+      {"@type": "DigitalDocument", "name": "config.json"}
+    ]
+  }'
 ```
 
-The keys will be different even though `filename` and `keyVersion` are the same.
-
+Different semantic paths produce different keys, even for the same document name.
 ---
 
 ## Integration with Age Encryption
@@ -451,7 +460,12 @@ The API returns Age-compatible keys that work with the [age encryption tool](htt
 # 1. Get public key from API
 PUBLIC_KEY=$(curl -s -X POST https://keys.example.com \
   -H "Content-Type: application/json" \
-  -d '{"filename":"secret.txt","keyVersion":1,"appId":"docs"}' \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "myorg"},
+      {"@type": "DigitalDocument", "name": "secret.txt"}
+    ]
+  }' \
   | jq -r '.age_public_key')
 
 # 2. Encrypt file with age
@@ -462,10 +476,16 @@ age -R /tmp/pubkey.txt -o secret.txt.age secret.txt
 ### Decryption Example
 
 ```bash
-# 1. Get private key from API
+# 1. Get private key from API (same semantic path!)
 PRIVATE_KEY=$(curl -s -X POST https://keys.example.com \
   -H "Content-Type: application/json" \
-  -d '{"filename":"secret.txt","keyVersion":1,"appId":"docs","getPrivateKey":true}' \
+  -d '{
+    "semanticPath": [
+      {"@type": "Organization", "name": "myorg"},
+      {"@type": "DigitalDocument", "name": "secret.txt"}
+    ],
+    "getPrivateKey": true
+  }' \
   | jq -r '.age_private_key')
 
 # 2. Decrypt file with age
@@ -523,7 +543,9 @@ return new Response(JSON.stringify(result), {
    - Never use HTTP for key material transmission
 
 3. **Implement request logging (without logging keys)**
-   - Log request metadata (timestamp, IP, appId, filename)
+   - Log request metadata (timestamp, IP, semanticPath summary)
+   - NEVER log the mnemonic, private keys, or entropy
+   - Use Cloudflare Workers logging or external logging services
    - NEVER log the mnemonic, private keys, or entropy
    - Use Cloudflare Workers logging or external logging services
 
@@ -550,45 +572,46 @@ return new Response(JSON.stringify(result), {
 
 ### Architectural Limitations
 
-1. **Deterministic IVs**: The IV is derived from the filename hash. While deterministic encryption is intentional for this use case, it has security implications (see `docs/SECURITY.md`).
+1. **Semantic path entropy**: The current semantic path derivation uses HMAC-SHA-256 chaining which provides good key separation. Each segment in the path contributes to the final entropy through the chaining mechanism.
 
-2. **Key entropy depends only on keyVersion**: The current implementation derives entropy from `keyVersion` alone. While `appId` and `filename` are included in the derivation path, they don't contribute to the entropy itself. This means you need to use different `keyVersion` values to get different keys for different files within the same app.
+2. **No IV field in responses**: The semantic path API does not return an `iv` field. Age encryption handles nonces internally, making the deterministic IV unnecessary for the primary use case.
 
 ---
 
 ## Troubleshooting
 
-### Issue: "Missing filename, appId, or keyVersion"
+### Issue: "semanticPath must be a non-empty array of JSON-LD objects"
 
-**Cause**: One or more required fields are missing or undefined.
+**Cause**: The `semanticPath` field is missing, not an array, empty, or contains invalid segments.
 
-**Solution**: Ensure all three required fields are present:
+**Solution**: Ensure `semanticPath` is a valid array with at least one object containing `@type`:
 ```json
 {
-  "filename": "file.txt",
-  "keyVersion": 1,
-  "appId": "myapp"
+  "semanticPath": [
+    {"@type": "Organization", "name": "myorg"},
+    {"@type": "DigitalDocument", "name": "file.txt"}
+  ]
 }
 ```
 
 ### Issue: Keys don't match between requests
 
-**Cause**: One of the input parameters differs between requests.
+**Cause**: The semantic path differs between requests.
 
-**Solution**: Verify that `filename`, `keyVersion`, and `appId` are exactly identical:
-- Same spelling and capitalization
-- Same whitespace
-- Same keyVersion number
+**Solution**: Verify that `semanticPath` is exactly identical:
+- Same number of segments
+- Same order of segments
+- Same property names and values
+- JSON key order doesn't matter (canonicalization handles this)
 
 ### Issue: Age can't decrypt with derived key
 
-**Cause**: Mismatch between encryption and decryption parameters.
+**Cause**: Mismatch between encryption and decryption semantic paths.
 
 **Solution**: 
-- Ensure you're using the same `filename`, `keyVersion`, and `appId` for both operations
+- Ensure you're using the exact same `semanticPath` for both operations
 - Verify the mnemonic hasn't changed
 - Check that the encrypted file hasn't been corrupted
-
 ---
 
 ## Client Libraries
@@ -598,10 +621,15 @@ return new Response(JSON.stringify(result), {
 You can import the core derivation functions directly:
 
 ```typescript
-import { deriveFromMnemonic } from './src/bip85kms';
+import { deriveFromSemanticPath, deriveMasterNodeFromMnemonic } from './src/bip85kms';
 
 const mnemonic = process.env.MNEMONIC_SECRET;
-const result = deriveFromMnemonic(mnemonic, 1, "myapp", "file.txt");
+const masterNode = deriveMasterNodeFromMnemonic(mnemonic);
+const semanticPath = [
+  {"@type": "Organization", "name": "myorg"},
+  {"@type": "DigitalDocument", "name": "file.txt"}
+];
+const result = deriveFromSemanticPath(masterNode, semanticPath);
 console.log(result.age_public_key);
 ```
 
@@ -610,21 +638,29 @@ console.log(result.age_public_key);
 The browser demo at `index.html` shows how to use the derivation functions client-side:
 
 ```javascript
-import { deriveFromMnemonic } from "./src/core.js";
+import { deriveFromSemanticPath, deriveMasterNodeFromMnemonic } from "./src/core.js";
 
-const result = deriveFromMnemonic(mnemonic, keyVersion, appId, filename);
-// Use result.age_public_key and result.iv
+const masterNode = deriveMasterNodeFromMnemonic(mnemonic);
+const semanticPath = [
+  {"@type": "Organization", "name": "myorg"},
+  {"@type": "DigitalDocument", "name": "file.txt"}
+];
+const result = deriveFromSemanticPath(masterNode, semanticPath);
+// Use result.age_public_key
 ```
 
-### Python
+### Python (Legacy)
+
+> ⚠️ **Note**: The Python CLI uses the legacy `filename/keyVersion/appId` API. For new projects, prefer the HTTP API with semantic paths.
 
 See `python/cli.py` for a Python implementation using the `bipsea` library.
 
-### Shell/Bash
+### Shell/Bash (Legacy)
+
+> ⚠️ **Note**: The shell scripts use the legacy `filename/keyVersion/appId` API. For new projects, prefer the HTTP API with semantic paths.
 
 The scripts in `bin/` show how to integrate with curl and Age:
-- `bin/deterministic_age.sh` - Age encryption/decryption wrapper
-- `bin/deterministic_openssl_encrypt.sh` - OpenSSL encryption wrapper
+- `bin/deterministic_age.sh` - Age encryption/decryption wrapper (legacy API)
 
 ---
 
