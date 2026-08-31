@@ -1,20 +1,10 @@
 export interface Env {
   MNEMONIC_SECRET: string;
+  /** Shared-secret API key required in the `Authorization: Bearer <key>` header. */
+  API_KEY?: string;
 }
 
-// Semantic path types
-export interface SemanticSegment {
-  "@type": string;
-  [key: string]: any;
-}
-
-export interface SemanticDerivationResult {
-  derivationPath: string;
-  age_private_key: string;
-  age_public_key: string;
-  raw_entropy: string;
-  semanticPath: SemanticSegment[];
-}
+export type { SemanticSegment, DerivationResult, SemanticDerivationResult } from "./core";
 
 export {
   bufferToHex,
@@ -30,4 +20,4 @@ export {
   jcs,
   semanticToIndex,
   validateSemanticSegment,
-} from "./core.js";
+} from "./core";

@@ -114,6 +114,37 @@ describe('BIP85KMS worker - Semantic Path API', () => {
 		expect(body.error).toContain('Invalid segment');
 	});
 
+	it('rejects requests over the semantic path length limit', async () => {
+		const response = await SELF.fetch('https://example.com', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				semanticPath: Array.from({ length: 33 }, (_, i) => ({ "@type": "Thing", "name": `item-${i}` })),
+			}),
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json<{ error: string }>();
+		expect(body.error).toContain('must not exceed');
+	});
+
+	it('rejects malformed JSON bodies', async () => {
+		const response = await SELF.fetch('https://example.com', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: '{not json',
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json<{ error: string }>();
+		expect(body.error).toContain('valid JSON');
+	});
+
+	it('responds to GET /health without auth', async () => {
+		const response = await SELF.fetch('https://example.com/health');
+		expect(response.status).toBe(200);
+		const body = await response.json<{ status: string }>();
+		expect(body.status).toBe('ok');
+	});
+
 	it('produces deterministic keys for same semantic path', async () => {
 		const payload = {
 			semanticPath: [
@@ -150,5 +181,46 @@ describe('Legacy deriveFromMnemonic function', () => {
 		expect(result.age_public_key).toMatch(/^age1[0-9a-z]+$/);
 		expect(result.raw_entropy).toMatch(/^[0-9a-f]{64}$/);
 		expect(result.iv).toMatch(/^[0-9a-f]{24}$/);
+	});
+});
+
+describe('API key authentication', () => {
+	it('rejects requests without a valid API key when API_KEY is configured', async () => {
+		const request = new IncomingRequest('https://example.com', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ semanticPath: [{ '@type': 'WebSite', url: 'https://github.com' }] }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, { ...TEST_ENV, API_KEY: 'secret-key' }, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(401);
+	});
+
+	it('accepts requests with a valid Authorization header when API_KEY is configured', async () => {
+		const request = new IncomingRequest('https://example.com', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: 'Bearer secret-key',
+			},
+			body: JSON.stringify({ semanticPath: [{ '@type': 'WebSite', url: 'https://github.com' }] }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, { ...TEST_ENV, API_KEY: 'secret-key' }, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(200);
+	});
+
+	it('allows unauthenticated requests when API_KEY is unset', async () => {
+		const request = new IncomingRequest('https://example.com', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ semanticPath: [{ '@type': 'WebSite', url: 'https://github.com' }] }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, TEST_ENV, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(200);
 	});
 });

@@ -2,25 +2,33 @@
 	"name": "bip85kms",
 	"version": "0.0.0",
 	"private": true,
+	"type": "module",
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"test": "vitest",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"cli": "tsx src/cli.ts",
+		"build:cli": "esbuild src/cli.ts --bundle --platform=node --format=esm --outfile=dist/cli.js",
+		"build:web": "esbuild web/app.ts --bundle --format=esm --outfile=web/dist/app.js --external:@scure/bip32 --external:@scure/bip39 --external:@noble/hashes/sha256 --external:@noble/hashes/hmac --external:@noble/hashes/argon2 --external:@noble/curves/ed25519 --external:bech32",
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.7.5",
 		"@cloudflare/workers-types": "^4.20250319.0",
+		"esbuild": "^0.24.2",
+		"tsx": "^4.19.2",
 		"typescript": "^5.5.2",
 		"vitest": "~3.0.7",
 		"wrangler": "^4.2.0"
 	},
 	"dependencies": {
+		"@noble/curves": "^1.8.2",
 		"@noble/hashes": "^1.7.1",
-		"@noble/secp256k1": "^2.2.3",
 		"@scure/bip32": "^1.6.2",
 		"@scure/bip39": "^1.5.4",
 		"bech32": "^2.0.0"
 	}
 }
+

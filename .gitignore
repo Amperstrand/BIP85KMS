@@ -170,3 +170,8 @@ dist
 
 .dev.vars
 .wrangler/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

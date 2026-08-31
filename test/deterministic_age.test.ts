@@ -98,4 +98,15 @@ describe('Deterministic Age Key Generation', () => {
 		expect(unicodeA.age_private_key).toBe(unicodeB.age_private_key);
 		expect(unicodeA.iv).toMatch(/^[0-9a-f]{24}$/);
 	});
+
+	it('derives distinct keys for different appId/filename under the same keyVersion', () => {
+		// Regression test for the entropy-derivation bug documented in docs/SECURITY.md:
+		// entropy previously depended only on keyVersion, so different appId/filename
+		// pairs under the same keyVersion collided to the same key material.
+		const a = deriveFromMnemonic(TEST_MNEMONIC, 1, 'app1', 'file1.txt');
+		const b = deriveFromMnemonic(TEST_MNEMONIC, 1, 'app2', 'file2.txt');
+		expect(a.age_private_key).not.toBe(b.age_private_key);
+		expect(a.age_public_key).not.toBe(b.age_public_key);
+		expect(a.raw_entropy).not.toBe(b.raw_entropy);
+	});
 });

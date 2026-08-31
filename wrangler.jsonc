@@ -33,6 +33,11 @@
 	/**
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
+	 *
+	 * This Worker requires two secrets, set via `wrangler secret put <NAME>`:
+	 *   - MNEMONIC_SECRET: the BIP39 mnemonic used to derive all keys.
+	 *   - API_KEY: shared secret clients must send as `Authorization: Bearer <API_KEY>`.
+	 *              If unset, the Worker accepts unauthenticated requests (dev-only).
 	 */
 
 	/**
