@@ -97,7 +97,12 @@ def u64be(value: int) -> bytes:
 
 
 def derive_bip85_entropy(index: int, master_node, verbose: bool = False) -> bytes:
-    """Derives BIP85 entropy from m/83696968'/{index}'."""
+    """
+    Derives BIP85 entropy from m/83696968'/{index}'.
+    
+    Per BIP85 spec: entropy = HMAC-SHA512(key="bip-entropy-from-k", message=privateKey)
+    Output is always 64 bytes (full HMAC-SHA512 output), never truncated.
+    """
     path = f"m/{BIP85_PURPOSE}'/{index}'"
     if verbose:
         print(f"\n[Step 1] Deriving child node for path: {path}")
@@ -108,12 +113,14 @@ def derive_bip85_entropy(index: int, master_node, verbose: bool = False) -> byte
     if priv is None:
         raise Exception("Failed to derive child private key")
     # bipsea prefixes private key data with a 0x00 sign byte (33 bytes); strip it
-    # to get the raw 32-byte private key that other implementations hash.
+    # to get the raw 32-byte private key.
     if len(priv) == 33:
         priv = priv[1:]
-    entropy = hashlib.sha256(priv).digest()
+    # BIP85 domain-separation string ensures entropy cannot be confused with other uses
+    domain_separation = b"bip-entropy-from-k"
+    entropy = hmac.new(domain_separation, priv, hashlib.sha512).digest()  # 64 bytes
     if verbose:
-        print(f"[Step 1] SHA256(child private key): {entropy.hex()}")
+        print(f"[Step 1] HMAC-SHA512(bip-entropy-from-k, child_priv): {entropy.hex()}")
     return entropy
 
 
@@ -202,29 +209,68 @@ def jcs(obj) -> str:
     raise TypeError(f"Cannot canonicalize type: {type(obj)}")
 
 
-def semantic_to_index(segment: dict, parent_entropy: bytes, hardened: bool = True) -> int:
+def semantic_to_index(segment: dict, parent_entropy: bytes, hardened: bool = True, nonce: bytes = None) -> int:
+    """
+    Converts a semantic segment to a BIP32 child index using HMAC-SHA512 imaging.
+    
+    Per BIP-Keychain spec: HMAC-SHA512(parent_entropy, canonical_json || nonce?)
+    """
     canonical = jcs(segment)
-    digest = hmac.new(parent_entropy, canonical.encode(), hashlib.sha256).digest()
+    canonical_bytes = canonical.encode()
+    
+    # Construct message: canonical JSON + optional nonce
+    if nonce:
+        message = canonical_bytes + nonce
+    else:
+        message = canonical_bytes
+    
+    # HMAC-SHA512 per BIP-Keychain spec
+    digest = hmac.new(parent_entropy, message, hashlib.sha512).digest()  # 64 bytes
+    
+    # Extract top 31 bits from 512-bit output
     value32 = bytes_to_int(digest[:4])
     index31 = (value32 >> 1) & 0xffffffff
     return (index31 | 0x80000000) if hardened else index31
 
 
-def derive_from_semantic_path(master_node, semantic_path: list, verbose: bool = False):
+def derive_from_semantic_path(master_node, semantic_path: list, nonce: bytes = None, verbose: bool = False):
+    """
+    Derives Age keys from a BIP-Keychain semantic path.
+    
+    Per Phase 2 spec:
+    - Maintains full 64-byte BIP85 entropy throughout derivation chain
+    - Uses HMAC-SHA512 for semantic imaging (not SHA256)
+    - Supports optional nonce for key rotation/versioning
+    - Validates path depth (max 16 segments)
+    """
+    MAX_DEPTH = 16  # Security limit per Phase 2 spec
+    
     if not isinstance(semantic_path, list) or len(semantic_path) == 0:
         raise ValueError("Semantic path must be a non-empty array")
+    
+    if len(semantic_path) > MAX_DEPTH:
+        raise ValueError(f"Semantic path exceeds maximum depth of {MAX_DEPTH}")
+    
     for i, segment in enumerate(semantic_path):
         if not isinstance(segment, dict) or "@type" not in segment:
             raise ValueError(f"Invalid segment at index {i}: must be a JSON object with @type")
+        # Validate segment size
+        segment_json = json.dumps(segment)
+        if len(segment_json) > 10000:
+            raise ValueError(f"Segment at index {i} exceeds maximum size of 10000 bytes")
 
     current_path = f"m/{BIP85_PURPOSE}'/{KEYCHAIN_APP_CODE}'"
+    # Initialize with BIP85 entropy for Keychain application
     current_entropy = derive_bip85_entropy(KEYCHAIN_APP_CODE, master_node, verbose)
     final_index = 0
+    final_child_index = KEYCHAIN_APP_CODE
 
     for segment in semantic_path:
-        index_with_hardened = semantic_to_index(segment, current_entropy, True)
+        # Pass nonce through all segments if provided
+        index_with_hardened = semantic_to_index(segment, current_entropy, True, nonce)
         unhardened_index = index_with_hardened & 0x7fffffff
         final_index = unhardened_index
+        final_child_index = index_with_hardened
         current_path = f"{current_path}/{unhardened_index}'"
 
         # bipsea's derive_key() internally does path[1:], so the leading "m" must stay.
@@ -233,9 +279,10 @@ def derive_from_semantic_path(master_node, semantic_path: list, verbose: bool = 
         if child.data is None:
             raise Exception(f"Failed to derive child node at {current_path}")
         # bipsea prefixes private key data with a 0x00 sign byte (33 bytes); strip it
-        # to get the raw 32-byte private key that other implementations hash.
         child_priv = child.data[1:] if len(child.data) == 33 else child.data
-        current_entropy = hashlib.sha256(child_priv).digest()
+        
+        # Per Phase 2 spec: re-derive full BIP85 entropy for child to maintain 64-byte entropy throughout chain
+        current_entropy = derive_bip85_entropy(index_with_hardened, child, verbose)
         if verbose:
             print(f"[Segment] path={current_path} entropy={current_entropy.hex()}")
 
@@ -285,13 +332,15 @@ def main():
     args = parse_args(sys.argv[1:])
     verbose = args.get("verbose") in [True, "true", "True"]
     get_private_key = args.get("getPrivateKey") in [True, "true", "True"]
+    nonce_arg = args.get("nonce")
+    nonce_bytes = nonce_arg.encode() if nonce_arg else None
 
     semantic_path_arg = args.get("semantic-path")
     if semantic_path_arg:
         master_node = load_master_node(verbose)
         try:
             semantic_path = json.loads(semantic_path_arg)
-            result = derive_from_semantic_path(master_node, semantic_path, verbose)
+            result = derive_from_semantic_path(master_node, semantic_path, nonce_bytes, verbose)
         except Exception as e:
             print("Error during key derivation:", str(e))
             sys.exit(1)

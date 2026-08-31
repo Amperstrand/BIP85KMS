@@ -12,6 +12,7 @@
 import { HDKey } from "@scure/bip32";
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { sha256 } from "@noble/hashes/sha256";
+import { sha512 } from "@noble/hashes/sha512";
 import { hmac } from "@noble/hashes/hmac";
 import { argon2id } from "@noble/hashes/argon2";
 import { x25519 } from "@noble/curves/ed25519";
@@ -36,6 +37,10 @@ export interface SemanticDerivationResult {
   age_public_key: string;
   raw_entropy: string;
   semanticPath: SemanticSegment[];
+}
+
+export interface SemanticDerivationOptions {
+  nonce?: Uint8Array;  // Optional versioning/rotation key
 }
 
 export interface DeriveIndexesResult {
@@ -86,6 +91,10 @@ function u64BE(value: number): Uint8Array {
 
 /**
  * Derives BIP85 entropy from a BIP32 master node at `m/83696968'/{index}'`.
+ * 
+ * Per BIP85 spec: entropy = HMAC-SHA512(key="bip-entropy-from-k", message=privateKey)
+ * Output is always 64 bytes (full HMAC-SHA512 output), never truncated.
+ * 
  * Entropy quality depends entirely on the master node's seed quality.
  */
 export function deriveBIP85Entropy(index: number, masterNode: HDKey): Uint8Array {
@@ -93,7 +102,9 @@ export function deriveBIP85Entropy(index: number, masterNode: HDKey): Uint8Array
   if (!child.privateKey) {
     throw new Error("Failed to derive privateKey from child node.");
   }
-  return sha256(child.privateKey);
+  // BIP85 domain-separation string ensures entropy cannot be confused with other uses
+  const domainSeparation = new TextEncoder().encode("bip-entropy-from-k");
+  return hmac(sha512, domainSeparation, child.privateKey);
 }
 
 /**
@@ -238,14 +249,33 @@ export function validateSemanticSegment(segment: unknown): asserts segment is Se
  * Converts a semantic segment to a BIP32 child index using chained entropy (the
  * "image function" `i()` from the BIP-Keychain proposal):
  * 1. Canonicalize the segment via JCS
- * 2. HMAC-SHA256(parentEntropy, canonicalJSON)
+ * 2. HMAC-SHA512(parentEntropy, canonicalJSON || nonce?) — per BIP-Keychain spec
  * 3. Take the top 31 bits as a valid BIP32 child index
  * 4. Optionally set the hardened bit
+ * 
+ * @param segment - JSON-LD semantic segment
+ * @param parentEntropy - 64 bytes of entropy from parent path or BIP85
+ * @param hardened - Whether to set the hardened bit (default: true)
+ * @param nonce - Optional versioning/rotation nonce
  */
-export function semanticToIndex(segment: SemanticSegment, parentEntropy: Uint8Array, hardened = true): number {
+export function semanticToIndex(
+  segment: SemanticSegment,
+  parentEntropy: Uint8Array,
+  hardened = true,
+  nonce?: Uint8Array,
+): number {
   const canonical = jcs(segment);
-  const hmacResult = hmac(sha256, parentEntropy, new TextEncoder().encode(canonical));
+  const canonicalBytes = new TextEncoder().encode(canonical);
+  
+  // Construct message: canonical JSON + optional nonce
+  const message = nonce
+    ? new Uint8Array([...canonicalBytes, ...nonce])
+    : canonicalBytes;
+  
+  // HMAC-SHA512 per BIP-Keychain spec
+  const hmacResult = hmac(sha512, parentEntropy, message);
 
+  // Extract top 31 bits from 512-bit output
   const bytes = hmacResult.slice(0, 4);
   const value32 = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
   const index31bit = (value32 >>> 1) >>> 0;
@@ -259,27 +289,51 @@ export function semanticToIndex(segment: SemanticSegment, parentEntropy: Uint8Ar
  * different indexes, and path order matters (`[A, B] != [B, A]`).
  *
  * Base path: `m/83696968'/67797668'` (BIP85 purpose / BIP-Keychain application code).
+ * 
+ * Per Phase 2 design:
+ * - Maintains full 64-byte BIP85 entropy throughout derivation chain
+ * - Uses HMAC-SHA512 for semantic imaging (not SHA256)
+ * - Supports optional nonce for key rotation/versioning
+ * - Validates path depth (max 16 segments)
  */
-export function deriveFromSemanticPath(masterNode: HDKey, semanticPath: SemanticSegment[]): SemanticDerivationResult {
+export function deriveFromSemanticPath(
+  masterNode: HDKey,
+  semanticPath: SemanticSegment[],
+  options?: SemanticDerivationOptions,
+): SemanticDerivationResult {
+  const MAX_DEPTH = 16;  // Security limit per Phase 2 spec
+  
   if (!Array.isArray(semanticPath) || semanticPath.length === 0) {
     throw new Error("Semantic path must be a non-empty array");
+  }
+  
+  if (semanticPath.length > MAX_DEPTH) {
+    throw new Error(`Semantic path exceeds maximum depth of ${MAX_DEPTH}`);
   }
 
   semanticPath.forEach((segment, idx) => {
     try {
       validateSemanticSegment(segment);
+      // Validate segment size
+      const segmentJSON = JSON.stringify(segment);
+      if (segmentJSON.length > 10000) {
+        throw new Error("Segment exceeds maximum size of 10000 bytes");
+      }
     } catch (err) {
       throw new Error(`Invalid segment at index ${idx}: ${(err as Error).message}`);
     }
   });
 
   let currentPath = `m/${BIP85_PURPOSE}'/${KEYCHAIN_APP_CODE}'`;
+  // Initialize with BIP85 entropy for Keychain application
   let currentEntropy = deriveBIP85Entropy(KEYCHAIN_APP_CODE, masterNode);
 
   let finalIndex = 0;
+
   for (const segment of semanticPath) {
-    const indexWithHardened = semanticToIndex(segment, currentEntropy, true);
-    const unhardenedIndex = indexWithHardened & 0x7fffffff;
+    // Pass nonce through all segments if provided
+    const childIndex = semanticToIndex(segment, currentEntropy, true, options?.nonce);
+    const unhardenedIndex = childIndex & 0x7fffffff;
     finalIndex = unhardenedIndex;
 
     currentPath = `${currentPath}/${unhardenedIndex}'`;
@@ -288,8 +342,10 @@ export function deriveFromSemanticPath(masterNode: HDKey, semanticPath: Semantic
     if (!childNode.privateKey) {
       throw new Error(`Failed to derive child node at ${currentPath}`);
     }
-    // Chain entropy through the path so every segment influences the next index.
-    currentEntropy = sha256(childNode.privateKey);
+
+    // Per Phase 2 spec: re-derive full BIP85 entropy for child to maintain 64-byte entropy throughout chain.
+    // Must pass the unhardened index: deriveBIP85Entropy hardens it itself via the path string.
+    currentEntropy = deriveBIP85Entropy(unhardenedIndex, childNode);
   }
 
   const finalEntropy = currentEntropy;
