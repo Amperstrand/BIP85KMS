@@ -162,7 +162,7 @@ describe('Semantic Path Derivation', () => {
     expect(result.derivationPath).toMatch(/^m\/83696968'\/67797668'\/\d+'/);
     expect(result.age_private_key).toMatch(/^AGE-SECRET-KEY-1[0-9A-Z]+$/);
     expect(result.age_public_key).toMatch(/^age1[0-9a-z]+$/);
-    expect(result.raw_entropy).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.raw_entropy).toMatch(/^[0-9a-f]{128}$/);
     expect(result.semanticPath).toEqual(semanticPath);
   });
 
