@@ -11,6 +11,8 @@ import {
 const TEST_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const BACON_MNEMONIC = 'bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon bacon';
 
+const PASSPHRASE_MASTER_KEY = deriveMasterKey('example-passphrase-do-not-use!');
+
 describe('Generate New Golden Vectors (for Phase 3c)', () => {
   it('BIP85 Entropy - TEST_MNEMONIC index 1', () => {
     const masterNode = deriveMasterNodeFromMnemonic(TEST_MNEMONIC);
@@ -21,14 +23,13 @@ describe('Generate New Golden Vectors (for Phase 3c)', () => {
   });
 
   it('Deterministic Age Keys - from passphrase', () => {
-    const testPassphrase = 'example-passphrase-do-not-use!';
-    const testMasterKey = deriveMasterKey(testPassphrase);
-
     console.log(`\n✓ deriveDeterministicAgeKey vectors:`);
-    console.log(`  Index 0: ${deriveDeterministicAgeKey(testMasterKey, 0)}`);
-    console.log(`  Index 2: ${deriveDeterministicAgeKey(testMasterKey, 2)}`);
-    console.log(`  Index 3: ${deriveDeterministicAgeKey(testMasterKey, 3)}`);
-    console.log(`  Index 4: ${deriveDeterministicAgeKey(testMasterKey, 4)}`);
+    console.log(`  Index 0: ${deriveDeterministicAgeKey(PASSPHRASE_MASTER_KEY, 0)}`);
+    console.log(`  Index 2: ${deriveDeterministicAgeKey(PASSPHRASE_MASTER_KEY, 2)}`);
+    console.log(`  Index 3: ${deriveDeterministicAgeKey(PASSPHRASE_MASTER_KEY, 3)}`);
+    console.log(`  Index 4: ${deriveDeterministicAgeKey(PASSPHRASE_MASTER_KEY, 4)}`);
+    // argon2id(64MiB) derived at module scope like deterministic_age.test.ts —
+    // inside a test body the ~12s sync block makes workerd's io-context disconnect
   });
 
   it('deriveFromMnemonic - BACON_MNEMONIC', () => {

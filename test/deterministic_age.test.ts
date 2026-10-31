@@ -77,7 +77,9 @@ describe('Deterministic Age Key Generation', () => {
 	// Golden vector test removed due to breaking change. Behavioral properties (determinism, size) are still validated elsewhere.
 	it('derives deterministic BIP85 entropy with correct size for a known mnemonic', () => {
 		const entropy = deriveBIP85Entropy(1, deriveMasterNodeFromMnemonic(TEST_MNEMONIC));
-		expect(entropy.length).toBe(64);\n		expect(bufferToHex(entropy)).toHaveLength(128);\n		// Entropy is deterministic - running again produces same result
+		expect(entropy.length).toBe(64);
+		expect(bufferToHex(entropy)).toHaveLength(128);
+		// Entropy is deterministic - running again produces same result
 		const entropy2 = deriveBIP85Entropy(1, deriveMasterNodeFromMnemonic(TEST_MNEMONIC));
 		expect(bufferToHex(entropy)).toBe(bufferToHex(entropy2));
 	});
